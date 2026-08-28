@@ -668,6 +668,44 @@ let colorTargetId = null; // label id being color-edited
 function uid() { return Math.random().toString(36).slice(2,9); }
 
 /* ═══════════════════════════════════════════
+   PERSISTENCE — localStorage auto-save
+══════════════════════════════════════════════ */
+const STORAGE_KEY = 'kanban_v1';
+let _saveTimer = null;
+
+function saveState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ boards, labels, currentBoardId }));
+  } catch(e) {
+    console.warn('Kanban: falha ao salvar no localStorage', e);
+  }
+}
+
+function scheduleSave() {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(saveState, 300);
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data.boards?.length || !data.labels?.length) return false;
+    boards         = data.boards;
+    labels         = data.labels;
+    currentBoardId = data.currentBoardId || data.boards[0].id;
+    if (!boards.find(b => b.id === currentBoardId)) currentBoardId = boards[0].id;
+    return true;
+  } catch(e) {
+    console.warn('Kanban: falha ao carregar do localStorage', e);
+    return false;
+  }
+}
+
+window.addEventListener('beforeunload', saveState);
+
+/* ═══════════════════════════════════════════
    BOARD SIDEBAR
 ══════════════════════════════════════════════ */
 function toggleSidebar() {
@@ -717,11 +755,12 @@ function switchBoard(id) {
   clearFilters();
   render();
   closeSidebar();
+  scheduleSave();
 }
 
 function renameCurrent(val) {
   const b = currentBoard();
-  if (b) b.name = val.trim() || b.name;
+  if (b) { b.name = val.trim() || b.name; scheduleSave(); }
 }
 
 function showCreateForm() {
@@ -749,6 +788,7 @@ function createBoard() {
   boards.push(nb);
   hideCreateForm();
   switchBoard(nb.id);
+  scheduleSave();
   showToast(`Quadro "${name}" criado`);
 }
 
@@ -786,6 +826,7 @@ function renameBoardPrompt(id) {
   b.name = name.trim();
   if (id === currentBoardId) document.getElementById('boardNameInput').value = b.name;
   renderBoardList();
+  scheduleSave();
   showToast('Quadro renomeado');
 }
 
@@ -800,6 +841,7 @@ function duplicateBoard(id) {
   copy.cards.forEach(k => k.id = uid());
   boards.push(copy);
   renderBoardList();
+  scheduleSave();
   showToast('Quadro duplicado');
 }
 
@@ -815,6 +857,7 @@ function deleteBoard(id) {
     render();
   }
   renderBoardList();
+  scheduleSave();
   showToast('Quadro excluído');
 }
 
@@ -853,6 +896,7 @@ function updateLabelName(id, val) {
   l.name = val;
   const prev = document.getElementById('lprev-' + id);
   if (prev) prev.textContent = val;
+  scheduleSave();
 }
 
 function addLabel() {
@@ -861,6 +905,7 @@ function addLabel() {
   const l = { id: uid(), name: 'Nova label', bg: newBg, text: newDot, dot: newDot };
   labels.push(l);
   renderLabelsBody();
+  scheduleSave();
   // focus the name input
   const row = document.getElementById('lrow-' + l.id);
   if (row) { const inp = row.querySelector('.label-name-input'); if (inp) { inp.focus(); inp.select(); } }
@@ -868,9 +913,9 @@ function addLabel() {
 
 function deleteLabel(id) {
   labels = labels.filter(l => l.id !== id);
-  // remove from all cards
   boards.forEach(b => b.cards.forEach(c => { c.tags = c.tags.filter(t => t !== id); }));
   renderLabelsBody();
+  scheduleSave();
 }
 
 /* ── Color picker ── */
@@ -898,6 +943,7 @@ function applyColor(hex) {
   l.bg   = hexWithAlpha(hex, 0.15);
   hideColorPopover();
   renderLabelsBody();
+  scheduleSave();
 }
 
 function hideColorPopover() {
@@ -1032,7 +1078,7 @@ function onDrop(e, colId) {
   if (!dragCard) return;
   const b = currentBoard();
   const card = b.cards.find(c => c.id === dragCard);
-  if (card && card.col !== colId) { card.col = colId; render(); showToast('Card movido'); }
+  if (card && card.col !== colId) { card.col = colId; render(); scheduleSave(); showToast('Card movido'); }
 }
 
 /* ═══════════════════════════════════════════
@@ -1040,7 +1086,7 @@ function onDrop(e, colId) {
 ══════════════════════════════════════════════ */
 function renameCol(id, val) {
   const col = currentBoard().cols.find(c => c.id === id);
-  if (col && val.trim()) col.title = val.trim();
+  if (col && val.trim()) { col.title = val.trim(); scheduleSave(); }
 }
 function colMenu(e, colId) {
   e.stopPropagation(); ctxColId = colId; ctxCardId = null;
@@ -1071,7 +1117,7 @@ function deleteCol(colId) {
   const b = currentBoard();
   b.cols = b.cols.filter(c => c.id !== colId);
   b.cards = b.cards.filter(c => c.col !== colId);
-  render(); showToast('Coluna excluída');
+  render(); scheduleSave(); showToast('Coluna excluída');
 }
 function openAddCol() {
   const name = prompt('Nome da nova coluna:');
@@ -1079,7 +1125,7 @@ function openAddCol() {
   const colors = ['#7B82A0','#6C63FF','#FBBF24','#34D399','#FB7185','#60A5FA'];
   const b = currentBoard();
   b.cols.push({ id: uid(), title: name.trim(), color: colors[b.cols.length % colors.length] });
-  render();
+  render(); scheduleSave();
 }
 
 /* ═══════════════════════════════════════════
@@ -1119,13 +1165,13 @@ function ctxDuplicate() {
   const copy = { ...card, id: uid(), title: card.title + ' (cópia)', tags:[...card.tags], assignees:[...card.assignees] };
   const idx = b.cards.findIndex(c => c.id === ctxCardId);
   b.cards.splice(idx+1, 0, copy);
-  render(); showToast('Card duplicado');
+  render(); scheduleSave(); showToast('Card duplicado');
 }
 function ctxDelete() {
   hideCtxMenu();
   const b = currentBoard();
   b.cards = b.cards.filter(c => c.id !== ctxCardId);
-  render(); showToast('Card excluído');
+  render(); scheduleSave(); showToast('Card excluído');
 }
 
 /* ═══════════════════════════════════════════
@@ -1213,7 +1259,7 @@ function saveCard() {
     b.cards.push({ id:uid(), col:colId, title, desc, tags:[...selectedTags], priority:selectedPriority, date, assignees:[] });
     showToast('Card criado');
   }
-  closeModal(); render();
+  closeModal(); render(); scheduleSave();
 }
 
 /* ═══════════════════════════════════════════
@@ -1265,6 +1311,10 @@ document.getElementById('labelsOverlay').addEventListener('click', e => {
 });
 
 /* ── INIT ── */
+const _restored = loadState();
+if (_restored) {
+  document.getElementById('boardNameInput').value = currentBoard()?.name || '';
+}
 render();
 renderBoardList();
 </script>
