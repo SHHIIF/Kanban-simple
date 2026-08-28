@@ -12,8 +12,8 @@
    Substitua os dois valores abaixo pelos do seu projeto.
    Veja o guia completo no final deste arquivo.
 ════════════════════════════════════════════════════════════════ */
-const SUPABASE_URL    = 'COLE_SEU_PROJECT_URL';      // ex: https://xxxx.supabase.co
-const SUPABASE_ANON_KEY = 'COLE_SUA_ANON_KEY';
+const SUPABASE_URL    = sb_publishable_lvFKdSWFmS7y21tKQDQbBA_DHSz4YtC';      // ex: https://xxxx.supabase.co
+const SUPABASE_ANON_KEY = 'sb_secret_G5RopA97e5lXMPZb3uG-8g_BLpovCRb';
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -1428,11 +1428,11 @@ PASSO 5 — Ativar Auth com Google
     1. https://console.cloud.google.com → APIs & Services → Credentials
     2. Crie um OAuth 2.0 Client ID (Web application)
     3. Em "Authorized redirect URIs" adicione:
-       https://SEU-PROJECT-ID.supabase.co/auth/v1/callback
+       https://rkzuzevxxktkiictwsdw.supabase.co/auth/v1/callback
     4. Copie Client ID e Client Secret de volta para o Supabase
   Em Authentication → URL Configuration:
-    Site URL: https://SEU-USUARIO.github.io/SEU-REPO/
-    Redirect URLs: adicione o mesmo URL acima
+    Site URL: https://shhiif.github.io/Kanban-simple/
+    Redirect URLs: https://shhiif.github.io/Kanban-simple/
 
 PASSO 6 — Copiar credenciais para o index.html
   Menu lateral: Settings → API
