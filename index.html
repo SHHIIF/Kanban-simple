@@ -129,11 +129,19 @@
   }
   .board-item-menu {
     background: none; border: none; cursor: pointer; color: var(--muted);
-    padding: 2px; border-radius: 4px; display: none; align-items: center;
-    transition: color .12s; flex-shrink: 0;
+    padding: 4px; border-radius: 4px; display: flex; align-items: center;
+    transition: color .12s, background .12s; flex-shrink: 0; opacity: 0;
   }
-  .board-item:hover .board-item-menu { display: flex; }
-  .board-item-menu:hover { color: var(--text); background: var(--card); }
+  .board-item:hover .board-item-menu { opacity: 1; }
+  .board-item-menu:hover { color: var(--red); background: rgba(255,92,106,.1); }
+  .board-item-del {
+    background: none; border: none; cursor: pointer; color: var(--muted);
+    padding: 4px; border-radius: 4px; display: flex; align-items: center;
+    transition: color .12s, background .12s; flex-shrink: 0;
+    opacity: 0;
+  }
+  .board-item:hover .board-item-del { opacity: 1; }
+  .board-item-del:hover { color: var(--red); background: rgba(255,92,106,.1); }
   .sidebar-footer { padding: 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
   .create-board-btn {
     display: flex; align-items: center; gap: 8px;
@@ -684,19 +692,19 @@ function renderBoardList(q = '') {
   const list = document.getElementById('boardList');
   const filtered = q ? boards.filter(b => b.name.toLowerCase().includes(q.toLowerCase())) : boards;
   list.innerHTML = filtered.map(b => `
-    <button class="board-item ${b.id === currentBoardId ? 'active' : ''}" onclick="switchBoard('${b.id}')">
-      <span class="board-item-icon">
+    <div class="board-item ${b.id === currentBoardId ? 'active' : ''}">
+      <span class="board-item-icon" onclick="switchBoard('${b.id}')" style="cursor:pointer">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <rect x="1" y="1" width="5" height="12" rx="1.5" fill="currentColor" opacity=".8"/>
           <rect x="8" y="1" width="5" height="7" rx="1.5" fill="currentColor" opacity=".5"/>
           <rect x="8" y="10" width="5" height="3" rx="1.5" fill="currentColor" opacity=".3"/>
         </svg>
       </span>
-      <span class="board-item-name" id="bname-${b.id}">${escHtml(b.name)}</span>
-      <button class="board-item-menu" onclick="boardItemMenu(event,'${b.id}')">
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="2.5" r="1.1" fill="currentColor"/><circle cx="6.5" cy="6.5" r="1.1" fill="currentColor"/><circle cx="6.5" cy="10.5" r="1.1" fill="currentColor"/></svg>
+      <span class="board-item-name" onclick="switchBoard('${b.id}')" style="cursor:pointer">${escHtml(b.name)}</span>
+      <button class="board-item-del" title="Excluir quadro" onclick="deleteBoard('${b.id}')">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3.5h10M4.5 3.5V2.5h4v1M5 6v4M8 6v4M2.5 3.5l.8 7.2a1 1 0 0 0 1 .8h4.4a1 1 0 0 0 1-.8l.8-7.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
-    </button>
+    </div>
   `).join('');
 }
 
@@ -796,12 +804,17 @@ function duplicateBoard(id) {
 }
 
 function deleteBoard(id) {
-  hideCtxMenu();
   if (boards.length === 1) { showToast('Não é possível excluir o único quadro'); return; }
-  if (!confirm('Excluir este quadro e todos os seus dados?')) return;
-  boards = boards.filter(b => b.id !== id);
-  if (currentBoardId === id) switchBoard(boards[0].id);
-  else renderBoardList();
+  const b = boards.find(x => x.id === id);
+  if (!confirm(`Excluir "${b?.name}"? Essa ação não pode ser desfeita.`)) return;
+  boards = boards.filter(x => x.id !== id);
+  if (currentBoardId === id) {
+    currentBoardId = boards[0].id;
+    document.getElementById('boardNameInput').value = boards[0].name;
+    clearFilters();
+    render();
+  }
+  renderBoardList();
   showToast('Quadro excluído');
 }
 
