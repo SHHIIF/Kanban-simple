@@ -10,9 +10,9 @@
    CONFIGURAÇÃO — preencha só estes 3 valores
    (instruções no final do arquivo)
 ════════════════════════════════════════════ */
-const SUPABASE_URL     = 'COLE_SEU_PROJECT_URL';   // ex: https://xxxx.supabase.co
-const SUPABASE_ANON_KEY= 'COLE_SUA_ANON_KEY';
-const APP_PASSWORD     = 'Familia1000';         // senha compartilhada entre os dois usuários
+const SUPABASE_URL     = https://hthpkexccocbncbhebcr.supabase.co/rest/v1/;
+const SUPABASE_ANON_KEY= sb_publishable_QyF550xnqhipiSdWs6kmrg_I4jOF_dI;
+const APP_PASSWORD     = TesteFamiliar123;
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -342,7 +342,7 @@ function render(){
     const colCards=cards.filter(c=>{
       if(c.col_id!==col.id) return false;
       if(activeFilters.size && !activeFilters.has(c.priority)) return false;
-      if(q && !(c.title||'').toLowerCase().includes(q) && !(c.desc||'').toLowerCase().includes(q)) return false;
+      if(q && !(c.title||'').toLowerCase().includes(q) && !(c.description||'').toLowerCase().includes(q)) return false;
       return true;
     });
     const total=cards.filter(c=>c.col_id===col.id).length;
@@ -398,7 +398,7 @@ function cardHTML(c){
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="6.5" cy="2.5" r="1.1" fill="currentColor"/><circle cx="6.5" cy="6.5" r="1.1" fill="currentColor"/><circle cx="6.5" cy="10.5" r="1.1" fill="currentColor"/></svg>
         </button>
       </div>
-      ${c.desc?`<div class="card-desc">${esc(c.desc)}</div>`:''}
+      ${c.description?`<div class="card-desc">${esc(c.description)}</div>`:''}
       ${tagsHtml?`<div class="card-tags">${tagsHtml}</div>`:''}
       <div class="card-footer"><div class="card-meta">
         ${dateStr?`<span class="card-meta-item" style="${overdue?'color:var(--red)':''}">
@@ -559,7 +559,7 @@ async function ctxDuplicate(){
   hideCtxMenu();
   const card=cards.find(c=>c.id===ctxCardId); if(!card) return;
   setSyncing(); signalEditing();
-  const {data:newCard,error}=await sb.from('cards').insert({board_id:currentBoard.id,col_id:card.col_id,title:card.title+' (cópia)',desc:card.desc||null,priority:card.priority,due_date:card.due_date||null,position:card.position}).select().single();
+  const {data:newCard,error}=await sb.from('cards').insert({board_id:currentBoard.id,col_id:card.col_id,title:card.title+' (cópia)',description:card.description||null,priority:card.priority,due_date:card.due_date||null,position:card.position}).select().single();
   if(error){ toast('Erro ao duplicar',true); setSyncErr(); return; }
   const srcLabels=cardLabels[card.id]||[];
   if(srcLabels.length&&newCard) await sb.from('card_labels').insert(srcLabels.map(lid=>({card_id:newCard.id,label_id:lid,board_id:currentBoard.id})));
@@ -586,7 +586,7 @@ function populateModal(card=null){
       data-tag="${l.id}" onclick="toggleTag(this,'${l.id}','${l.color_text}')">${esc(l.name)}</button>`).join('');
   document.querySelectorAll('.prio-btn').forEach(b=>b.classList.toggle('selected',b.dataset.p===selectedPriority));
   document.getElementById('mTitle').value=card?.title||'';
-  document.getElementById('mDesc').value=card?.desc||'';
+  document.getElementById('mDesc').value=card?.description||'';
   document.getElementById('mDate').value=card?.due_date||'';
 }
 function openNewCard(){ editingCardId=null; modalColId=cols[0]?.id||null; selectedPriority='medium'; selectedTags=[]; document.getElementById('modalTitle').textContent='Novo card'; populateModal(); document.getElementById('modalOverlay').classList.add('show'); setTimeout(()=>document.getElementById('mTitle').focus(),80); }
@@ -608,13 +608,13 @@ async function saveCard(){
   const date=document.getElementById('mDate').value||null;
   setSyncing(); signalEditing();
   if(editingCardId){
-    await sb.from('cards').update({title,desc,col_id:colId,priority:selectedPriority,due_date:date}).eq('id',editingCardId);
+    await sb.from('cards').update({title,description:desc,col_id:colId,priority:selectedPriority,due_date:date}).eq('id',editingCardId);
     await sb.from('card_labels').delete().eq('card_id',editingCardId);
     if(selectedTags.length) await sb.from('card_labels').insert(selectedTags.map(lid=>({card_id:editingCardId,label_id:lid,board_id:currentBoard.id})));
     logHistory('card_edit',`Card "${title}" editado`); toast('Card atualizado');
   } else {
     const maxPos=Math.max(-1,...cards.filter(c=>c.col_id===colId).map(c=>c.position));
-    const {data:nc,error}=await sb.from('cards').insert({board_id:currentBoard.id,col_id:colId,title,desc,priority:selectedPriority,due_date:date,position:maxPos+1}).select().single();
+    const {data:nc,error}=await sb.from('cards').insert({board_id:currentBoard.id,col_id:colId,title,description:desc,priority:selectedPriority,due_date:date,position:maxPos+1}).select().single();
     if(error){ toast('Erro ao criar card',true); setSyncErr(); return; }
     if(selectedTags.length&&nc) await sb.from('card_labels').insert(selectedTags.map(lid=>({card_id:nc.id,label_id:lid,board_id:currentBoard.id})));
     logHistory('card_create',`Card "${title}" criado`); toast('Card criado');
@@ -1210,7 +1210,7 @@ PASSO 2 — Criar as tabelas
     board_id   uuid references boards(id) on delete cascade,
     col_id     uuid references board_cols(id) on delete cascade,
     title      text not null,
-    desc       text,
+    description text,
     priority   text default 'medium',
     due_date   date,
     position   int  default 0,
