@@ -439,6 +439,8 @@ async function onDrop(e,colId){
   setSyncing(); signalEditing();
   const {error}=await sb.from('cards').update({col_id:colId}).eq('id',dragCardId);
   if(error){ toast('Erro ao mover card',true); setSyncErr(); return; }
+  // Atualiza cache local imediatamente
+  card.col_id=colId; render();
   setSynced(); logHistory('card_move',`Card "${card.title}" movido`);
 }
 
@@ -574,7 +576,12 @@ async function ctxDuplicate(){
   const {data:newCard,error}=await sb.from('cards').insert({board_id:currentBoard.id,col_id:card.col_id,title:card.title+' (cópia)',description:card.description||null,priority:card.priority,due_date:card.due_date||null,position:card.position}).select().single();
   if(error){ toast('Erro ao duplicar',true); setSyncErr(); return; }
   const srcLabels=cardLabels[card.id]||[];
-  if(srcLabels.length&&newCard) await sb.from('card_labels').insert(srcLabels.map(lid=>({card_id:newCard.id,label_id:lid,board_id:currentBoard.id})));
+  if(srcLabels.length&&newCard){
+    await sb.from('card_labels').insert(srcLabels.map(lid=>({card_id:newCard.id,label_id:lid,board_id:currentBoard.id})));
+    cardLabels[newCard.id]=[...srcLabels];
+  }
+  // Atualiza cache local imediatamente
+  if(newCard&&!cards.find(c=>c.id===newCard.id)) cards.push(newCard); render();
   logHistory('card_duplicate',`Card "${card.title}" duplicado`); toast('Card duplicado'); setSynced();
 }
 async function ctxDelete(){
@@ -582,6 +589,8 @@ async function ctxDelete(){
   const card=cards.find(c=>c.id===ctxCardId);
   setSyncing(); signalEditing();
   await sb.from('cards').delete().eq('id',ctxCardId);
+  // Atualiza cache local imediatamente
+  cards=cards.filter(c=>c.id!==ctxCardId); delete cardLabels[ctxCardId]; render();
   logHistory('card_delete',`Card "${card?.title}" excluído`); toast('Card excluído'); setSynced();
 }
 
@@ -619,19 +628,32 @@ async function saveCard(){
   const desc=document.getElementById('mDesc').value.trim()||null;
   const date=document.getElementById('mDate').value||null;
   setSyncing(); signalEditing();
+
   if(editingCardId){
-    await sb.from('cards').update({title,description:desc,col_id:colId,priority:selectedPriority,due_date:date}).eq('id',editingCardId);
+    const {error}=await sb.from('cards').update({title,description:desc,col_id:colId,priority:selectedPriority,due_date:date}).eq('id',editingCardId);
+    if(error){ toast('Erro ao salvar card',true); setSyncErr(); return; }
+    // Atualiza cache local imediatamente (não espera o Realtime)
+    const idx=cards.findIndex(c=>c.id===editingCardId);
+    if(idx>=0) cards[idx]={...cards[idx],title,description:desc,col_id:colId,priority:selectedPriority,due_date:date};
     await sb.from('card_labels').delete().eq('card_id',editingCardId);
     if(selectedTags.length) await sb.from('card_labels').insert(selectedTags.map(lid=>({card_id:editingCardId,label_id:lid,board_id:currentBoard.id})));
+    cardLabels[editingCardId]=[...selectedTags];
     logHistory('card_edit',`Card "${title}" editado`); toast('Card atualizado');
+
   } else {
     const maxPos=Math.max(-1,...cards.filter(c=>c.col_id===colId).map(c=>c.position));
     const {data:nc,error}=await sb.from('cards').insert({board_id:currentBoard.id,col_id:colId,title,description:desc,priority:selectedPriority,due_date:date,position:maxPos+1}).select().single();
     if(error){ toast('Erro ao criar card',true); setSyncErr(); return; }
-    if(selectedTags.length&&nc) await sb.from('card_labels').insert(selectedTags.map(lid=>({card_id:nc.id,label_id:lid,board_id:currentBoard.id})));
+    // Atualiza cache local imediatamente (não espera o Realtime)
+    cards.push(nc);
+    if(selectedTags.length&&nc){
+      await sb.from('card_labels').insert(selectedTags.map(lid=>({card_id:nc.id,label_id:lid,board_id:currentBoard.id})));
+      cardLabels[nc.id]=[...selectedTags];
+    }
     logHistory('card_create',`Card "${title}" criado`); toast('Card criado');
   }
-  setSynced(); closeModal();
+
+  setSynced(); closeModal(); render();
 }
 
 /* ════════════════════════════════════════════
