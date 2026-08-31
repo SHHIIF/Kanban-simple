@@ -4,46 +4,45 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kanban</title>
-
-<!-- Supabase JS via ESM CDN -->
 <script type="module">
-/* ═══════════════════════════════════════════════════════════════
-   SUPABASE CONFIG
-   Substitua os dois valores abaixo pelos do seu projeto.
-   Veja o guia completo no final deste arquivo.
-════════════════════════════════════════════════════════════════ */
-const SUPABASE_URL    = sb_publishable_lvFKdSWFmS7y21tKQDQbBA_DHSz4YtC';      // ex: https://xxxx.supabase.co
-const SUPABASE_ANON_KEY = 'sb_secret_G5RopA97e5lXMPZb3uG-8g_BLpovCRb';
+
+/* ════════════════════════════════════════════
+   CONFIGURAÇÃO — preencha só estes 3 valores
+   (instruções no final do arquivo)
+════════════════════════════════════════════ */
+const SUPABASE_URL     = 'COLE_SEU_PROJECT_URL';   // ex: https://xxxx.supabase.co
+const SUPABASE_ANON_KEY= 'COLE_SUA_ANON_KEY';
+const APP_PASSWORD     = 'Familia1000';         // senha compartilhada entre os dois usuários
 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  realtime: { params: { eventsPerSecond: 20 } }
+  realtime: { params: { eventsPerSecond: 20 } },
+  auth: { persistSession: true, storageKey: 'kanban_session' }
 });
 
-/* ═══════════════════════════════════════════
-   CONSTANTS
-══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════
+   CONSTANTES
+════════════════════════════════════════════ */
 const PALETTE = [
   '#60A5FA','#818CF8','#A78BFA','#F472B6','#FB7185',
   '#FBBF24','#34D399','#2DD4BF','#F97316','#E879F9',
   '#94A3B8','#C084FC'
 ];
 
-/* ═══════════════════════════════════════════
-   LOCAL STATE (cache da UI)
-   Fonte de verdade = Supabase.
-   Toda mutação → escreve no DB → listener recebe → re-render.
-══════════════════════════════════════════════ */
-let currentUser   = null;
-let boards        = [];          // [{ id, name, owner_id }]
-let currentBoard  = null;        // { id, name, ... }
-let cols          = [];          // [{ id, board_id, title, color, position }]
-let cards         = [];          // [{ id, col_id, title, desc, priority, due_date, position }]
-let cardLabels    = {};          // { card_id: [label_id] }
-let labels        = [];          // [{ id, board_id, name, color_bg, color_text, color_dot }]
-let onlineUsers   = {};          // { user_id: { name, photo, last_seen } }
-let historyItems  = [];          // últimos 60 eventos
-let editingUsers  = {};          // { user_id: { name, board_id } }
+const SESSION_KEY = 'kanban_unlocked';
+
+/* ════════════════════════════════════════════
+   ESTADO LOCAL (cache — fonte de verdade = Supabase)
+════════════════════════════════════════════ */
+let boards        = [];
+let currentBoard  = null;
+let cols          = [];
+let cards         = [];
+let cardLabels    = {};   // { card_id: [label_id, …] }
+let labels        = [];
+let historyItems  = [];
+let onlineUsers   = {};   // { uid: { name, ts } }
+let editingUsers  = {};
 
 // UI
 let dragCardId      = null;
@@ -56,96 +55,88 @@ let selectedTags    = [];
 let modalColId      = null;
 let colorTargetId   = null;
 let realtimeChannel = null;
-let presenceInterval = null;
+let presenceInterval= null;
 
-/* ═══════════════════════════════════════════
+// Identidade leve (sem auth real — apenas nome de sessão)
+let myName = '';
+const myUid = 'u_' + Math.random().toString(36).slice(2, 9);
+
+/* ════════════════════════════════════════════
    UTILS
-══════════════════════════════════════════════ */
-function uid()      { return crypto.randomUUID(); }
-function esc(s)     { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function fmtDate(s) { const d=new Date(s+'T00:00:00'); return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}); }
+════════════════════════════════════════════ */
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function fmtDate(s){ const d=new Date(s+'T00:00:00'); return d.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}); }
 function hexAlpha(h,a){ const r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16); return `rgba(${r},${g},${b},${a})`; }
-function initials(n){ return (n||'??').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
+function initials(n){ return (n||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
 function userColor(id){ const c=['#6C63FF','#34D399','#FBBF24','#FB7185','#60A5FA','#A78BFA']; let h=0; for(let ch of(id||'')) h=(h+ch.charCodeAt(0))%c.length; return c[h]; }
 function relTime(iso){ const s=Math.floor((Date.now()-new Date(iso))/1000); if(s<60)return 'agora mesmo'; if(s<3600)return Math.floor(s/60)+'m atrás'; if(s<86400)return Math.floor(s/3600)+'h atrás'; return Math.floor(s/86400)+'d atrás'; }
 
-/* ── Sync dot ── */
 function setSyncing(){ const d=document.getElementById('syncDot'); if(d){d.className='sync-dot syncing';d.title='Salvando…';} }
 function setSynced(){  const d=document.getElementById('syncDot'); if(d){d.className='sync-dot';d.title='Sincronizado';} }
-function setSyncErr(){ const d=document.getElementById('syncDot'); if(d){d.className='sync-dot error';d.title='Erro de conexão';} }
+function setSyncErr(){ const d=document.getElementById('syncDot'); if(d){d.className='sync-dot error';d.title='Erro';} }
 
-/* ── Toast ── */
-function toast(msg,isErr=false){
+function toast(msg, err=false){
   const t=document.getElementById('toast');
   t.textContent=msg;
-  t.style.borderColor=isErr?'var(--red)':'var(--border)';
+  t.style.borderColor=err?'var(--red)':'var(--border)';
   t.classList.add('show');
   clearTimeout(t._t);
   t._t=setTimeout(()=>t.classList.remove('show'),2400);
 }
 
-/* ═══════════════════════════════════════════
-   AUTH
-══════════════════════════════════════════════ */
-async function signInGoogle(){
-  document.getElementById('authLoading').classList.remove('hidden');
-  const { error } = await sb.auth.signInWithOAuth({
-    provider: 'google',
-    options: { redirectTo: window.location.href }
-  });
-  if(error){ document.getElementById('authLoading').classList.add('hidden'); toast(error.message, true); }
+/* ════════════════════════════════════════════
+   AUTH — senha compartilhada simples
+════════════════════════════════════════════ */
+function isUnlocked(){
+  return sessionStorage.getItem(SESSION_KEY) === 'true';
 }
 
-async function signOut(){
-  await stopPresence();
-  await sb.auth.signOut();
+function checkPassword(input){
+  return input === APP_PASSWORD;
 }
 
-sb.auth.onAuthStateChange(async (event, session) => {
-  if(session?.user){
-    currentUser = {
-      id:    session.user.id,
-      name:  session.user.user_metadata?.full_name || session.user.email,
-      photo: session.user.user_metadata?.avatar_url || null,
-      email: session.user.email
-    };
-    document.getElementById('authGate').classList.add('hidden');
-    document.getElementById('appShell').style.display='flex';
-    renderUserAvatar();
-    await initBoards();
-  } else {
-    currentUser = null;
-    document.getElementById('authGate').classList.remove('hidden');
-    document.getElementById('appShell').style.display='none';
+async function tryUnlock(){
+  const input = document.getElementById('passwordInput').value;
+  const errEl = document.getElementById('passwordError');
+
+  if(!checkPassword(input)){
+    errEl.textContent = 'Senha incorreta. Tente novamente.';
+    document.getElementById('passwordInput').classList.add('shake');
+    setTimeout(()=>document.getElementById('passwordInput').classList.remove('shake'), 500);
+    return;
   }
-});
 
-function renderUserAvatar(){
-  const btn=document.getElementById('userAvatarBtn');
-  if(!btn) return;
-  btn.innerHTML = currentUser?.photo
-    ? `<img src="${esc(currentUser.photo)}" class="presence-avatar" title="${esc(currentUser.name)}" style="border:none">`
-    : `<div class="presence-avatar-initials" style="background:${userColor(currentUser?.id||'')}" title="${esc(currentUser?.name||'')}">${initials(currentUser?.name)}</div>`;
+  // Senha correta — autentica anonimamente no Supabase para o RLS funcionar
+  const { error } = await sb.auth.signInAnonymously();
+  if(error && error.message !== 'User already registered'){
+    errEl.textContent = 'Erro de conexão com o servidor.';
+    return;
+  }
+
+  sessionStorage.setItem(SESSION_KEY, 'true');
+
+  // Pede nome
+  const name = document.getElementById('nameInput').value.trim();
+  myName = name || 'Usuário';
+
+  document.getElementById('authGate').classList.add('hidden');
+  document.getElementById('appShell').style.display = 'flex';
+  initApp();
 }
 
-function openUserMenu(e){
-  e.stopPropagation();
-  const menu=document.getElementById('ctxMenu');
-  menu.innerHTML=`
-    <div style="padding:8px 10px 6px;font-size:12px;color:var(--muted)">${esc(currentUser?.name||'')}
-      <br><span style="font-size:11px">${esc(currentUser?.email||'')}</span></div>
-    <div class="ctx-divider"></div>
-    <button class="ctx-item danger" onclick="signOut()">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M5 2H2.5A1.5 1.5 0 0 0 1 3.5v6A1.5 1.5 0 0 0 2.5 11H5M8.5 9.5 12 6.5 8.5 3.5M12 6.5H5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      Sair
-    </button>`;
-  positionMenu(e);
-}
+function handlePasswordKey(e){ if(e.key==='Enter') tryUnlock(); }
 
-/* ═══════════════════════════════════════════
-   INIT BOARDS
-══════════════════════════════════════════════ */
-async function initBoards(){
+/* ════════════════════════════════════════════
+   INIT
+════════════════════════════════════════════ */
+async function initApp(){
+  // Garante sessão anônima ativa
+  const { data: { session } } = await sb.auth.getSession();
+  if(!session){
+    const { error } = await sb.auth.signInAnonymously();
+    if(error){ toast('Erro de conexão', true); setSyncErr(); return; }
+  }
+
   const params = new URLSearchParams(window.location.search);
   const sharedId = params.get('board');
 
@@ -155,36 +146,26 @@ async function initBoards(){
   boards = data || [];
 
   if(!boards.length){
-    // Primeiro uso: cria board padrão
     await createDefaultBoard();
     return;
   }
 
-  const target = sharedId && boards.find(b=>b.id===sharedId)
-    ? sharedId : boards[0].id;
+  const target = sharedId && boards.find(b=>b.id===sharedId) ? sharedId : boards[0].id;
   await switchBoard(target);
 }
 
 async function createDefaultBoard(){
-  const { data: board, error } = await sb
-    .from('boards')
-    .insert({ name: 'Sprint Q3 — Produto', owner_id: currentUser.id })
-    .select().single();
-  if(error){ toast('Erro ao criar quadro', true); return; }
+  const { data: board, error } = await sb.from('boards').insert({ name: 'Meu Kanban' }).select().single();
+  if(error){ toast('Erro ao criar quadro inicial', true); return; }
 
-  // Colunas padrão
   await sb.from('board_cols').insert([
-    { board_id: board.id, title:'Backlog',      color:'#7B82A0', position: 0 },
-    { board_id: board.id, title:'Em progresso', color:'#6C63FF', position: 1 },
-    { board_id: board.id, title:'Revisão',      color:'#FBBF24', position: 2 },
-    { board_id: board.id, title:'Concluído',    color:'#34D399', position: 3 },
+    { board_id: board.id, title:'A fazer',      color:'#7B82A0', position:0 },
+    { board_id: board.id, title:'Em progresso', color:'#6C63FF', position:1 },
+    { board_id: board.id, title:'Concluído',    color:'#34D399', position:2 },
   ]);
-
-  // Labels padrão
   await sb.from('labels').insert([
     { board_id: board.id, name:'Design',   color_bg:'#1E3A5F', color_text:'#60A5FA', color_dot:'#60A5FA' },
     { board_id: board.id, name:'Backend',  color_bg:'#3D2A0A', color_text:'#FBBF24', color_dot:'#FBBF24' },
-    { board_id: board.id, name:'Entregue', color_bg:'#0D2B1E', color_text:'#34D399', color_dot:'#34D399' },
     { board_id: board.id, name:'Bug',      color_bg:'#2D0E1A', color_text:'#FB7185', color_dot:'#FB7185' },
     { board_id: board.id, name:'Feature',  color_bg:'#1E1A40', color_text:'#A78BFA', color_dot:'#A78BFA' },
   ]);
@@ -193,13 +174,12 @@ async function createDefaultBoard(){
   await switchBoard(board.id);
 }
 
-/* ═══════════════════════════════════════════
-   SWITCH BOARD + DATA LOAD
-══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════
+   SWITCH BOARD
+════════════════════════════════════════════ */
 async function switchBoard(id){
-  // Detach previous realtime channel
   if(realtimeChannel){ await sb.removeChannel(realtimeChannel); realtimeChannel=null; }
-  await stopPresence();
+  stopPresence();
 
   currentBoard = boards.find(b=>b.id===id) || null;
   if(!currentBoard) return;
@@ -209,21 +189,23 @@ async function switchBoard(id){
   closeSidebar();
   setSyncing();
 
-  // Load all data in parallel
-  const [colsRes, cardsRes, labelsRes, clRes, histRes] = await Promise.all([
-    sb.from('board_cols').select('*').eq('board_id', id).order('position'),
-    sb.from('cards').select('*').eq('board_id', id).order('position'),
-    sb.from('labels').select('*').eq('board_id', id),
-    sb.from('card_labels').select('*').eq('board_id', id),
-    sb.from('history').select('*').eq('board_id', id).order('created_at', {ascending:false}).limit(60),
+  const [colsR, cardsR, labelsR, clR, histR] = await Promise.all([
+    sb.from('board_cols').select('*').eq('board_id',id).order('position'),
+    sb.from('cards').select('*').eq('board_id',id).order('position'),
+    sb.from('labels').select('*').eq('board_id',id),
+    sb.from('card_labels').select('*').eq('board_id',id),
+    sb.from('history').select('*').eq('board_id',id).order('created_at',{ascending:false}).limit(60),
   ]);
 
-  cols        = colsRes.data  || [];
-  cards       = cardsRes.data || [];
-  labels      = labelsRes.data|| [];
-  historyItems= histRes.data  || [];
-  cardLabels  = {};
-  (clRes.data||[]).forEach(cl=>{ if(!cardLabels[cl.card_id]) cardLabels[cl.card_id]=[]; cardLabels[cl.card_id].push(cl.label_id); });
+  cols         = colsR.data  || [];
+  cards        = cardsR.data || [];
+  labels       = labelsR.data|| [];
+  historyItems = histR.data  || [];
+  cardLabels   = {};
+  (clR.data||[]).forEach(cl=>{
+    if(!cardLabels[cl.card_id]) cardLabels[cl.card_id]=[];
+    cardLabels[cl.card_id].push(cl.label_id);
+  });
 
   setSynced();
   render();
@@ -232,121 +214,102 @@ async function switchBoard(id){
   startPresence(id);
 }
 
-/* ═══════════════════════════════════════════
-   REALTIME — Supabase postgres_changes
-══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════
+   REALTIME
+════════════════════════════════════════════ */
 function subscribeRealtime(boardId){
   realtimeChannel = sb.channel(`board:${boardId}`)
-    /* cards */
-    .on('postgres_changes',{ event:'INSERT', schema:'public', table:'cards', filter:`board_id=eq.${boardId}` }, p => {
-      if(!cards.find(c=>c.id===p.new.id)) cards.push(p.new);
-      render();
+    // cards
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'cards',filter:`board_id=eq.${boardId}`}, p=>{
+      if(!cards.find(c=>c.id===p.new.id)) cards.push(p.new); render();
     })
-    .on('postgres_changes',{ event:'UPDATE', schema:'public', table:'cards', filter:`board_id=eq.${boardId}` }, p => {
-      const i=cards.findIndex(c=>c.id===p.new.id);
-      if(i>=0) cards[i]=p.new; else cards.push(p.new);
-      render();
+    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'cards',filter:`board_id=eq.${boardId}`}, p=>{
+      const i=cards.findIndex(c=>c.id===p.new.id); if(i>=0)cards[i]=p.new; else cards.push(p.new); render();
     })
-    .on('postgres_changes',{ event:'DELETE', schema:'public', table:'cards', filter:`board_id=eq.${boardId}` }, p => {
-      cards=cards.filter(c=>c.id!==p.old.id);
-      render();
+    .on('postgres_changes',{event:'DELETE',schema:'public',table:'cards',filter:`board_id=eq.${boardId}`}, p=>{
+      cards=cards.filter(c=>c.id!==p.old.id); render();
     })
-    /* cols */
-    .on('postgres_changes',{ event:'INSERT', schema:'public', table:'board_cols', filter:`board_id=eq.${boardId}` }, p => {
-      if(!cols.find(c=>c.id===p.new.id)) cols.push(p.new);
-      cols.sort((a,b)=>a.position-b.position);
-      render();
+    // cols
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'board_cols',filter:`board_id=eq.${boardId}`}, p=>{
+      if(!cols.find(c=>c.id===p.new.id)) cols.push(p.new); cols.sort((a,b)=>a.position-b.position); render();
     })
-    .on('postgres_changes',{ event:'UPDATE', schema:'public', table:'board_cols', filter:`board_id=eq.${boardId}` }, p => {
-      const i=cols.findIndex(c=>c.id===p.new.id);
-      if(i>=0) cols[i]=p.new; else cols.push(p.new);
-      cols.sort((a,b)=>a.position-b.position);
-      render();
+    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'board_cols',filter:`board_id=eq.${boardId}`}, p=>{
+      const i=cols.findIndex(c=>c.id===p.new.id); if(i>=0)cols[i]=p.new; else cols.push(p.new); cols.sort((a,b)=>a.position-b.position); render();
     })
-    .on('postgres_changes',{ event:'DELETE', schema:'public', table:'board_cols', filter:`board_id=eq.${boardId}` }, p => {
-      cols=cols.filter(c=>c.id!==p.old.id);
-      render();
+    .on('postgres_changes',{event:'DELETE',schema:'public',table:'board_cols',filter:`board_id=eq.${boardId}`}, p=>{
+      cols=cols.filter(c=>c.id!==p.old.id); render();
     })
-    /* labels */
-    .on('postgres_changes',{ event:'*', schema:'public', table:'labels', filter:`board_id=eq.${boardId}` }, async () => {
-      const { data } = await sb.from('labels').select('*').eq('board_id', boardId);
-      labels = data || [];
-      render();
+    // labels
+    .on('postgres_changes',{event:'*',schema:'public',table:'labels',filter:`board_id=eq.${boardId}`}, async ()=>{
+      const {data}=await sb.from('labels').select('*').eq('board_id',boardId);
+      labels=data||[]; render();
     })
-    /* card_labels */
-    .on('postgres_changes',{ event:'*', schema:'public', table:'card_labels', filter:`board_id=eq.${boardId}` }, async () => {
-      const { data } = await sb.from('card_labels').select('*').eq('board_id', boardId);
-      cardLabels = {};
-      (data||[]).forEach(cl=>{ if(!cardLabels[cl.card_id]) cardLabels[cl.card_id]=[]; cardLabels[cl.card_id].push(cl.label_id); });
-      render();
+    // card_labels
+    .on('postgres_changes',{event:'*',schema:'public',table:'card_labels',filter:`board_id=eq.${boardId}`}, async ()=>{
+      const {data}=await sb.from('card_labels').select('*').eq('board_id',boardId);
+      cardLabels={}; (data||[]).forEach(cl=>{ if(!cardLabels[cl.card_id])cardLabels[cl.card_id]=[]; cardLabels[cl.card_id].push(cl.label_id); }); render();
     })
-    /* history */
-    .on('postgres_changes',{ event:'INSERT', schema:'public', table:'history', filter:`board_id=eq.${boardId}` }, p => {
-      historyItems.unshift(p.new);
-      if(historyItems.length>60) historyItems.pop();
+    // history
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'history',filter:`board_id=eq.${boardId}`}, p=>{
+      historyItems.unshift(p.new); if(historyItems.length>60)historyItems.pop();
     })
-    /* board name */
-    .on('postgres_changes',{ event:'UPDATE', schema:'public', table:'boards', filter:`id=eq.${boardId}` }, p => {
-      currentBoard={ ...currentBoard, ...p.new };
-      document.getElementById('boardNameInput').value = p.new.name;
+    // board rename
+    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'boards',filter:`id=eq.${boardId}`}, p=>{
+      currentBoard={...currentBoard,...p.new};
+      document.getElementById('boardNameInput').value=p.new.name;
+      boards=boards.map(b=>b.id===boardId?{...b,...p.new}:b);
+      renderBoardList();
     })
-    /* presence via Broadcast */
-    .on('broadcast', { event:'presence' }, ({ payload }) => {
-      if(payload.user_id !== currentUser?.id){
-        onlineUsers[payload.user_id] = payload;
+    // presença (broadcast)
+    .on('broadcast',{event:'presence'}, ({payload})=>{
+      if(payload.uid!==myUid){
+        onlineUsers[payload.uid]=payload;
         renderPresenceBar();
       }
     })
-    .on('broadcast', { event:'editing' }, ({ payload }) => {
-      if(payload.user_id !== currentUser?.id){
-        editingUsers[payload.user_id] = payload;
+    .on('broadcast',{event:'editing'}, ({payload})=>{
+      if(payload.uid!==myUid){
+        editingUsers[payload.uid]=payload;
         renderEditingIndicator();
-        clearTimeout(editingUsers[payload.user_id]._t);
-        editingUsers[payload.user_id]._t = setTimeout(()=>{ delete editingUsers[payload.user_id]; renderEditingIndicator(); }, 5000);
+        clearTimeout(editingUsers[payload.uid]?._t);
+        if(editingUsers[payload.uid]) editingUsers[payload.uid]._t=setTimeout(()=>{ delete editingUsers[payload.uid]; renderEditingIndicator(); },5000);
       }
     })
-    .on('broadcast', { event:'offline' }, ({ payload }) => {
-      delete onlineUsers[payload.user_id];
-      renderPresenceBar();
+    .on('broadcast',{event:'offline'}, ({payload})=>{
+      delete onlineUsers[payload.uid]; renderPresenceBar();
     })
     .subscribe();
 }
 
-/* ═══════════════════════════════════════════
-   PRESENCE
-══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════
+   PRESENÇA
+════════════════════════════════════════════ */
 function startPresence(boardId){
-  if(!currentUser || !realtimeChannel) return;
-  const broadcast = () => realtimeChannel.send({
+  if(!realtimeChannel) return;
+  const send=()=>realtimeChannel.send({
     type:'broadcast', event:'presence',
-    payload:{ user_id: currentUser.id, name: currentUser.name, photo: currentUser.photo, board_id: boardId, ts: Date.now() }
+    payload:{ uid:myUid, name:myName, board_id:boardId, ts:Date.now() }
   });
-  broadcast();
-  presenceInterval = setInterval(broadcast, 20000);
+  send();
+  presenceInterval=setInterval(send, 20000);
 }
 
-async function stopPresence(){
-  clearInterval(presenceInterval);
-  presenceInterval=null;
-  if(realtimeChannel && currentUser){
-    await realtimeChannel.send({ type:'broadcast', event:'offline', payload:{ user_id: currentUser.id } });
-  }
-  onlineUsers={};
-  renderPresenceBar();
+function stopPresence(){
+  clearInterval(presenceInterval); presenceInterval=null;
+  if(realtimeChannel) realtimeChannel.send({type:'broadcast',event:'offline',payload:{uid:myUid}});
+  onlineUsers={}; renderPresenceBar();
 }
 
 function signalEditing(){
-  if(!currentUser || !realtimeChannel || !currentBoard) return;
-  realtimeChannel.send({ type:'broadcast', event:'editing', payload:{ user_id: currentUser.id, name: currentUser.name, board_id: currentBoard.id } });
+  if(!realtimeChannel||!currentBoard) return;
+  realtimeChannel.send({type:'broadcast',event:'editing',payload:{uid:myUid,name:myName,board_id:currentBoard.id}});
 }
 
 function renderPresenceBar(){
   const bar=document.getElementById('presenceBar');
   if(!bar) return;
-  bar.innerHTML = Object.values(onlineUsers).slice(0,5).map(u =>
-    u.photo
-      ? `<img src="${esc(u.photo)}" class="presence-avatar" title="${esc(u.name||'')} • online">`
-      : `<div class="presence-avatar-initials" style="background:${userColor(u.user_id||'')}" title="${esc(u.name||'')} • online">${initials(u.name)}</div>`
+  bar.innerHTML=Object.values(onlineUsers).slice(0,5).map(u=>
+    `<div class="presence-avatar-initials" style="background:${userColor(u.uid)}" title="${esc(u.name||'')} • online">${initials(u.name)}</div>`
   ).join('');
 }
 
@@ -355,27 +318,20 @@ function renderEditingIndicator(){
   if(!el) return;
   const others=Object.values(editingUsers).filter(u=>u.board_id===currentBoard?.id);
   if(others.length){ el.style.display=''; el.textContent=others.map(u=>(u.name||'').split(' ')[0]).join(', ')+' editando…'; }
-  else { el.style.display='none'; }
+  else el.style.display='none';
 }
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════════════
    LOG HISTORY
-══════════════════════════════════════════════ */
+════════════════════════════════════════════ */
 async function logHistory(action, detail){
-  if(!currentUser || !currentBoard) return;
-  await sb.from('history').insert({
-    board_id:   currentBoard.id,
-    user_id:    currentUser.id,
-    user_name:  currentUser.name,
-    user_photo: currentUser.photo||null,
-    action,
-    detail
-  });
+  if(!currentBoard) return;
+  await sb.from('history').insert({ board_id:currentBoard.id, user_name:myName, action, detail });
 }
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════════════
    RENDER
-══════════════════════════════════════════════ */
+════════════════════════════════════════════ */
 function render(){
   const bd=document.getElementById('board');
   if(!bd) return;
@@ -419,19 +375,19 @@ function render(){
     bd.appendChild(wrap);
   });
 
-  const addBtn=document.createElement('button');
-  addBtn.className='add-col-btn';
-  addBtn.innerHTML=`<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v10M1 6.5h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Nova coluna`;
-  addBtn.onclick=openAddCol;
-  bd.appendChild(addBtn);
+  const btn=document.createElement('button');
+  btn.className='add-col-btn';
+  btn.innerHTML=`<svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v10M1 6.5h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Nova coluna`;
+  btn.onclick=openAddCol;
+  bd.appendChild(btn);
   attachDrag();
 }
 
 function cardHTML(c){
-  const tagIds = cardLabels[c.id]||[];
-  const tagsHtml = tagIds.map(tid=>{ const l=labels.find(x=>x.id===tid); if(!l)return ''; return `<span class="tag" style="background:${l.color_bg};color:${l.color_text}">${esc(l.name)}</span>`; }).join('');
-  const dateStr = c.due_date ? fmtDate(c.due_date) : '';
-  const overdue = c.due_date && new Date(c.due_date)<new Date() && cols[cols.length-1]?.id!==c.col_id;
+  const tagIds=cardLabels[c.id]||[];
+  const tagsHtml=tagIds.map(tid=>{ const l=labels.find(x=>x.id===tid); if(!l)return ''; return `<span class="tag" style="background:${l.color_bg};color:${l.color_text}">${esc(l.name)}</span>`; }).join('');
+  const dateStr=c.due_date?fmtDate(c.due_date):'';
+  const overdue=c.due_date&&new Date(c.due_date)<new Date()&&cols[cols.length-1]?.id!==c.col_id;
   return `
     <div class="card" id="card-${c.id}" draggable="true" data-card-id="${c.id}"
       ondblclick="openEditCard('${c.id}')" oncontextmenu="showCtxMenu(event,'${c.id}')">
@@ -444,19 +400,17 @@ function cardHTML(c){
       </div>
       ${c.desc?`<div class="card-desc">${esc(c.desc)}</div>`:''}
       ${tagsHtml?`<div class="card-tags">${tagsHtml}</div>`:''}
-      <div class="card-footer">
-        <div class="card-meta">
-          ${dateStr?`<span class="card-meta-item" style="${overdue?'color:var(--red)':''}">
-            <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="2" width="9" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 4.5h9M3.5 1v2M7.5 1v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-            ${dateStr}</span>`:''}
-        </div>
-      </div>
+      <div class="card-footer"><div class="card-meta">
+        ${dateStr?`<span class="card-meta-item" style="${overdue?'color:var(--red)':''}">
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><rect x="1" y="2" width="9" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M1 4.5h9M3.5 1v2M7.5 1v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          ${dateStr}</span>`:''}
+      </div></div>
     </div>`;
 }
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════════════
    DRAG & DROP
-══════════════════════════════════════════════ */
+════════════════════════════════════════════ */
 function attachDrag(){
   document.querySelectorAll('.card[draggable]').forEach(el=>{
     el.addEventListener('dragstart',()=>{ dragCardId=el.dataset.cardId; setTimeout(()=>el.classList.add('dragging'),0); });
@@ -471,40 +425,29 @@ async function onDrop(e,colId){
   const card=cards.find(c=>c.id===dragCardId);
   if(!card||card.col_id===colId) return;
   setSyncing(); signalEditing();
-  const { error }=await sb.from('cards').update({ col_id: colId }).eq('id', dragCardId);
-  if(error){ toast('Erro ao mover card', true); setSyncErr(); return; }
-  setSynced();
-  logHistory('card_move', `Card "${card.title}" movido`);
+  const {error}=await sb.from('cards').update({col_id:colId}).eq('id',dragCardId);
+  if(error){ toast('Erro ao mover card',true); setSyncErr(); return; }
+  setSynced(); logHistory('card_move',`Card "${card.title}" movido`);
 }
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════════════
    BOARD SIDEBAR
-══════════════════════════════════════════════ */
+════════════════════════════════════════════ */
 function toggleSidebar(){
-  const sb2=document.getElementById('boardSidebar'),ov=document.getElementById('sidebarOverlay'),btn=document.getElementById('logoBtn');
-  const open=sb2.classList.toggle('open');
-  ov.classList.toggle('show',open);
-  btn.classList.toggle('open',open);
+  const s=document.getElementById('boardSidebar'),ov=document.getElementById('sidebarOverlay'),btn=document.getElementById('logoBtn');
+  const open=s.classList.toggle('open'); ov.classList.toggle('show',open); btn.classList.toggle('open',open);
   if(open){ renderBoardList(); setTimeout(()=>document.getElementById('boardSearchInput')?.focus(),220); }
 }
-function closeSidebar(){
-  document.getElementById('boardSidebar').classList.remove('open');
-  document.getElementById('sidebarOverlay').classList.remove('show');
-  document.getElementById('logoBtn').classList.remove('open');
-}
+function closeSidebar(){ document.getElementById('boardSidebar').classList.remove('open'); document.getElementById('sidebarOverlay').classList.remove('show'); document.getElementById('logoBtn').classList.remove('open'); }
 
 function renderBoardList(q=''){
   const list=document.getElementById('boardList');
   if(!list) return;
-  const filtered=q?boards.filter(b=>(b.name||'').toLowerCase().includes(q.toLowerCase())):boards;
-  list.innerHTML=filtered.map(b=>`
+  const f=q?boards.filter(b=>(b.name||'').toLowerCase().includes(q.toLowerCase())):boards;
+  list.innerHTML=f.map(b=>`
     <div class="board-item ${b.id===currentBoard?.id?'active':''}">
       <span class="board-item-icon" onclick="switchBoard('${b.id}')" style="cursor:pointer">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-          <rect x="1" y="1" width="5" height="12" rx="1.5" fill="currentColor" opacity=".8"/>
-          <rect x="8" y="1" width="5" height="7" rx="1.5" fill="currentColor" opacity=".5"/>
-          <rect x="8" y="10" width="5" height="3" rx="1.5" fill="currentColor" opacity=".3"/>
-        </svg>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="5" height="12" rx="1.5" fill="currentColor" opacity=".8"/><rect x="8" y="1" width="5" height="7" rx="1.5" fill="currentColor" opacity=".5"/><rect x="8" y="10" width="5" height="3" rx="1.5" fill="currentColor" opacity=".3"/></svg>
       </span>
       <span class="board-item-name" onclick="switchBoard('${b.id}')" style="cursor:pointer">${esc(b.name||'Sem nome')}</span>
       <button class="board-item-del" title="Excluir" onclick="deleteBoard('${b.id}')">
@@ -512,46 +455,38 @@ function renderBoardList(q=''){
       </button>
     </div>`).join('');
 }
-
 function filterBoards(q){ renderBoardList(q); }
 function showCreateForm(){ document.getElementById('createBoardForm').classList.add('show'); setTimeout(()=>document.getElementById('newBoardInput')?.focus(),50); }
 function hideCreateForm(){ document.getElementById('createBoardForm').classList.remove('show'); document.getElementById('newBoardInput').value=''; }
-function createBoardKey(e){ if(e.key==='Enter') createBoard(); if(e.key==='Escape') hideCreateForm(); }
+function createBoardKey(e){ if(e.key==='Enter')createBoard(); if(e.key==='Escape')hideCreateForm(); }
 
 async function createBoard(){
   const name=document.getElementById('newBoardInput').value.trim();
   if(!name) return;
   setSyncing();
-  const { data: board, error }=await sb.from('boards').insert({ name, owner_id: currentUser.id }).select().single();
-  if(error){ toast('Erro ao criar quadro', true); setSyncErr(); return; }
-
+  const {data:board,error}=await sb.from('boards').insert({name}).select().single();
+  if(error){ toast('Erro ao criar quadro',true); setSyncErr(); return; }
   await sb.from('board_cols').insert([
-    { board_id: board.id, title:'A fazer',      color:'#7B82A0', position:0 },
-    { board_id: board.id, title:'Em progresso', color:'#6C63FF', position:1 },
-    { board_id: board.id, title:'Concluído',    color:'#34D399', position:2 },
+    {board_id:board.id,title:'A fazer',color:'#7B82A0',position:0},
+    {board_id:board.id,title:'Em progresso',color:'#6C63FF',position:1},
+    {board_id:board.id,title:'Concluído',color:'#34D399',position:2},
   ]);
   await sb.from('labels').insert([
-    { board_id: board.id, name:'Design',   color_bg:'#1E3A5F', color_text:'#60A5FA', color_dot:'#60A5FA' },
-    { board_id: board.id, name:'Backend',  color_bg:'#3D2A0A', color_text:'#FBBF24', color_dot:'#FBBF24' },
-    { board_id: board.id, name:'Feature',  color_bg:'#1E1A40', color_text:'#A78BFA', color_dot:'#A78BFA' },
+    {board_id:board.id,name:'Feature',color_bg:'#1E1A40',color_text:'#A78BFA',color_dot:'#A78BFA'},
+    {board_id:board.id,name:'Bug',color_bg:'#2D0E1A',color_text:'#FB7185',color_dot:'#FB7185'},
   ]);
-
-  boards.push(board);
-  hideCreateForm();
+  boards.push(board); hideCreateForm();
   await switchBoard(board.id);
-  logHistory('board_create', `Quadro "${name}" criado`);
-  toast(`Quadro "${name}" criado`);
-  setSynced();
+  logHistory('board_create',`Quadro "${name}" criado`);
+  toast(`Quadro "${name}" criado`); setSynced();
 }
 
 async function deleteBoard(id){
   if(boards.length===1){ toast('Não é possível excluir o único quadro'); return; }
   const b=boards.find(x=>x.id===id);
-  if(!confirm(`Excluir "${b?.name}"? Essa ação não pode ser desfeita.`)) return;
+  if(!confirm(`Excluir "${b?.name}"? Esta ação não pode ser desfeita.`)) return;
   setSyncing();
-  // CASCADE via RLS/FK apaga cols, cards, labels, history
-  const { error }=await sb.from('boards').delete().eq('id', id);
-  if(error){ toast('Erro ao excluir quadro', true); setSyncErr(); return; }
+  await sb.from('boards').delete().eq('id',id);
   boards=boards.filter(x=>x.id!==id);
   if(currentBoard?.id===id) await switchBoard(boards[0].id);
   else renderBoardList();
@@ -561,70 +496,54 @@ async function deleteBoard(id){
 async function renameCurrent(val){
   if(!val.trim()||!currentBoard) return;
   setSyncing(); signalEditing();
-  const { error }=await sb.from('boards').update({ name: val.trim() }).eq('id', currentBoard.id);
-  if(error){ toast('Erro ao renomear', true); setSyncErr(); return; }
+  await sb.from('boards').update({name:val.trim()}).eq('id',currentBoard.id);
   currentBoard.name=val.trim();
   boards=boards.map(b=>b.id===currentBoard.id?{...b,name:val.trim()}:b);
-  logHistory('board_rename', `Quadro renomeado para "${val.trim()}"`);
+  logHistory('board_rename',`Quadro renomeado para "${val.trim()}"`);
   setSynced();
 }
 
-/* ═══════════════════════════════════════════
-   COL ACTIONS
-══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════
+   COLUNAS
+════════════════════════════════════════════ */
 async function renameCol(id,val){
   if(!val.trim()) return;
   setSyncing(); signalEditing();
-  const { error }=await sb.from('board_cols').update({ title: val.trim() }).eq('id', id);
-  if(error){ toast('Erro ao renomear coluna', true); setSyncErr(); return; }
-  logHistory('col_rename', `Coluna renomeada para "${val.trim()}"`); setSynced();
+  await sb.from('board_cols').update({title:val.trim()}).eq('id',id);
+  logHistory('col_rename',`Coluna renomeada para "${val.trim()}"`); setSynced();
 }
-
 function colMenu(e,colId){
   e.stopPropagation(); ctxColId=colId; ctxCardId=null;
   const menu=document.getElementById('ctxMenu');
   menu.innerHTML=`
-    <button class="ctx-item" onclick="colFocusRename('${colId}')">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M8.5 1.5 11.5 4.5l-7 7H2v-3l7-7z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>Renomear
-    </button>
-    <button class="ctx-item" onclick="addCardCtxCol('${colId}')">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v10M1 6.5h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Adicionar card
-    </button>
+    <button class="ctx-item" onclick="addCardCtxCol('${colId}')"><svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1v10M1 6.5h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Adicionar card</button>
     <div class="ctx-divider"></div>
-    <button class="ctx-item danger" onclick="deleteCol('${colId}')">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3.5h10M4.5 3.5V2.5h4v1M5 6v4M8 6v4M2.5 3.5l.8 7.2a1 1 0 0 0 1 .8h4.4a1 1 0 0 0 1-.8l.8-7.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>Excluir coluna
-    </button>`;
+    <button class="ctx-item danger" onclick="deleteCol('${colId}')"><svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3.5h10M4.5 3.5V2.5h4v1M5 6v4M8 6v4M2.5 3.5l.8 7.2a1 1 0 0 0 1 .8h4.4a1 1 0 0 0 1-.8l.8-7.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>Excluir coluna</button>`;
   positionMenu(e);
 }
-function colFocusRename(id){ hideCtxMenu(); const inp=document.querySelector(`[data-col-id="${id}"] .col-title`); if(inp){inp.focus();inp.select();} }
 function addCardCtxCol(id){ hideCtxMenu(); openAddCardInCol(id); }
-
 async function deleteCol(colId){
   hideCtxMenu();
   if(!confirm('Excluir coluna e todos os seus cards?')) return;
   setSyncing(); signalEditing();
-  // Cards com ON DELETE CASCADE serão apagados automaticamente (via FK)
-  const { error }=await sb.from('board_cols').delete().eq('id', colId);
-  if(error){ toast('Erro ao excluir coluna', true); setSyncErr(); return; }
+  await sb.from('board_cols').delete().eq('id',colId);
   logHistory('col_delete','Coluna excluída'); toast('Coluna excluída'); setSynced();
 }
-
 async function openAddCol(){
   const name=prompt('Nome da nova coluna:');
   if(!name?.trim()) return;
   setSyncing(); signalEditing();
   const maxPos=Math.max(-1,...cols.map(c=>c.position));
-  const { error }=await sb.from('board_cols').insert({ board_id: currentBoard.id, title: name.trim(), color: ['#7B82A0','#6C63FF','#FBBF24','#34D399','#FB7185','#60A5FA'][cols.length%6], position: maxPos+1 });
-  if(error){ toast('Erro ao criar coluna', true); setSyncErr(); return; }
-  logHistory('col_create', `Coluna "${name.trim()}" criada`); setSynced();
+  const colors=['#7B82A0','#6C63FF','#FBBF24','#34D399','#FB7185','#60A5FA'];
+  await sb.from('board_cols').insert({board_id:currentBoard.id,title:name.trim(),color:colors[cols.length%6],position:maxPos+1});
+  logHistory('col_create',`Coluna "${name.trim()}" criada`); setSynced();
 }
 
-/* ═══════════════════════════════════════════
-   CARD CONTEXT MENU
-══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════
+   CONTEXT MENU (CARDS)
+════════════════════════════════════════════ */
 function showCtxMenu(e,cardId){
-  e.preventDefault(); e.stopPropagation();
-  ctxCardId=cardId; ctxColId=null;
+  e.preventDefault(); e.stopPropagation(); ctxCardId=cardId; ctxColId=null;
   const menu=document.getElementById('ctxMenu');
   menu.innerHTML=`
     <button class="ctx-item" onclick="ctxEdit()"><svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M8.5 1.5 11.5 4.5l-7 7H2v-3l7-7z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>Editar</button>
@@ -636,67 +555,51 @@ function showCtxMenu(e,cardId){
 function positionMenu(e){ const m=document.getElementById('ctxMenu'); m.classList.add('show'); m.style.left=Math.min(e.clientX,window.innerWidth-190)+'px'; m.style.top=Math.min(e.clientY,window.innerHeight-160)+'px'; }
 function hideCtxMenu(){ document.getElementById('ctxMenu').classList.remove('show'); }
 function ctxEdit(){ hideCtxMenu(); openEditCard(ctxCardId); }
-
 async function ctxDuplicate(){
   hideCtxMenu();
-  const card=cards.find(c=>c.id===ctxCardId);
-  if(!card) return;
+  const card=cards.find(c=>c.id===ctxCardId); if(!card) return;
   setSyncing(); signalEditing();
-  const { data: newCard, error }=await sb.from('cards').insert({ board_id: currentBoard.id, col_id: card.col_id, title: card.title+' (cópia)', desc: card.desc||null, priority: card.priority, due_date: card.due_date||null, position: card.position, created_by: currentUser.id }).select().single();
-  if(error){ toast('Erro ao duplicar', true); setSyncErr(); return; }
-  // Duplicate labels
+  const {data:newCard,error}=await sb.from('cards').insert({board_id:currentBoard.id,col_id:card.col_id,title:card.title+' (cópia)',desc:card.desc||null,priority:card.priority,due_date:card.due_date||null,position:card.position}).select().single();
+  if(error){ toast('Erro ao duplicar',true); setSyncErr(); return; }
   const srcLabels=cardLabels[card.id]||[];
-  if(srcLabels.length && newCard){
-    await sb.from('card_labels').insert(srcLabels.map(lid=>({ card_id: newCard.id, label_id: lid, board_id: currentBoard.id })));
-  }
-  logHistory('card_duplicate', `Card "${card.title}" duplicado`); toast('Card duplicado'); setSynced();
+  if(srcLabels.length&&newCard) await sb.from('card_labels').insert(srcLabels.map(lid=>({card_id:newCard.id,label_id:lid,board_id:currentBoard.id})));
+  logHistory('card_duplicate',`Card "${card.title}" duplicado`); toast('Card duplicado'); setSynced();
 }
-
 async function ctxDelete(){
   hideCtxMenu();
   const card=cards.find(c=>c.id===ctxCardId);
   setSyncing(); signalEditing();
-  const { error }=await sb.from('cards').delete().eq('id', ctxCardId);
-  if(error){ toast('Erro ao excluir', true); setSyncErr(); return; }
-  logHistory('card_delete', `Card "${card?.title}" excluído`); toast('Card excluído'); setSynced();
+  await sb.from('cards').delete().eq('id',ctxCardId);
+  logHistory('card_delete',`Card "${card?.title}" excluído`); toast('Card excluído'); setSynced();
 }
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════════════
    CARD MODAL
-══════════════════════════════════════════════ */
+════════════════════════════════════════════ */
 function populateModal(card=null){
   const sel=document.getElementById('mCol');
   sel.innerHTML=cols.map(c=>`<option value="${c.id}" ${card?.col_id===c.id?'selected':''}>${esc(c.title)}</option>`).join('');
   if(modalColId&&!card) sel.value=modalColId;
-
-  const tp=document.getElementById('tagPicker');
-  tp.innerHTML=labels.map(l=>`
+  document.getElementById('tagPicker').innerHTML=labels.map(l=>`
     <button class="tag-pick-btn ${selectedTags.includes(l.id)?'selected':''}"
       style="background:${l.color_bg};color:${l.color_text};border-color:${selectedTags.includes(l.id)?l.color_text:'transparent'}"
       data-tag="${l.id}" onclick="toggleTag(this,'${l.id}','${l.color_text}')">${esc(l.name)}</button>`).join('');
-
   document.querySelectorAll('.prio-btn').forEach(b=>b.classList.toggle('selected',b.dataset.p===selectedPriority));
-  document.getElementById('mTitle').value = card?.title||'';
-  document.getElementById('mDesc').value  = card?.desc||'';
-  document.getElementById('mDate').value  = card?.due_date||'';
+  document.getElementById('mTitle').value=card?.title||'';
+  document.getElementById('mDesc').value=card?.desc||'';
+  document.getElementById('mDate').value=card?.due_date||'';
 }
-
 function openNewCard(){ editingCardId=null; modalColId=cols[0]?.id||null; selectedPriority='medium'; selectedTags=[]; document.getElementById('modalTitle').textContent='Novo card'; populateModal(); document.getElementById('modalOverlay').classList.add('show'); setTimeout(()=>document.getElementById('mTitle').focus(),80); }
 function openAddCardInCol(colId){ editingCardId=null; modalColId=colId; selectedPriority='medium'; selectedTags=[]; document.getElementById('modalTitle').textContent='Novo card'; populateModal(); document.getElementById('modalOverlay').classList.add('show'); setTimeout(()=>document.getElementById('mTitle').focus(),80); }
 function openEditCard(cardId){
-  const card=cards.find(c=>c.id===cardId);
-  if(!card) return;
-  editingCardId=cardId; modalColId=card.col_id;
-  selectedPriority=card.priority||'medium'; selectedTags=[...(cardLabels[cardId]||[])];
-  document.getElementById('modalTitle').textContent='Editar card';
-  populateModal(card);
-  document.getElementById('modalOverlay').classList.add('show');
-  setTimeout(()=>document.getElementById('mTitle').focus(),80);
+  const card=cards.find(c=>c.id===cardId); if(!card) return;
+  editingCardId=cardId; modalColId=card.col_id; selectedPriority=card.priority||'medium'; selectedTags=[...(cardLabels[cardId]||[])];
+  document.getElementById('modalTitle').textContent='Editar card'; populateModal(card);
+  document.getElementById('modalOverlay').classList.add('show'); setTimeout(()=>document.getElementById('mTitle').focus(),80);
 }
 function closeModal(){ document.getElementById('modalOverlay').classList.remove('show'); editingCardId=null; }
 function selectPriority(btn){ selectedPriority=btn.dataset.p; document.querySelectorAll('.prio-btn').forEach(b=>b.classList.toggle('selected',b===btn)); }
 function toggleTag(btn,id,text){ if(selectedTags.includes(id)){selectedTags=selectedTags.filter(t=>t!==id);btn.classList.remove('selected');btn.style.borderColor='transparent';}else{selectedTags.push(id);btn.classList.add('selected');btn.style.borderColor=text;} }
-
 async function saveCard(){
   const title=document.getElementById('mTitle').value.trim();
   if(!title){ document.getElementById('mTitle').focus(); return; }
@@ -704,77 +607,61 @@ async function saveCard(){
   const desc=document.getElementById('mDesc').value.trim()||null;
   const date=document.getElementById('mDate').value||null;
   setSyncing(); signalEditing();
-
   if(editingCardId){
-    const { error }=await sb.from('cards').update({ title, desc, col_id: colId, priority: selectedPriority, due_date: date }).eq('id', editingCardId);
-    if(error){ toast('Erro ao salvar', true); setSyncErr(); return; }
-    // Update labels: delete old, insert new
-    await sb.from('card_labels').delete().eq('card_id', editingCardId);
-    if(selectedTags.length) await sb.from('card_labels').insert(selectedTags.map(lid=>({ card_id: editingCardId, label_id: lid, board_id: currentBoard.id })));
-    logHistory('card_edit', `Card "${title}" editado`); toast('Card atualizado');
+    await sb.from('cards').update({title,desc,col_id:colId,priority:selectedPriority,due_date:date}).eq('id',editingCardId);
+    await sb.from('card_labels').delete().eq('card_id',editingCardId);
+    if(selectedTags.length) await sb.from('card_labels').insert(selectedTags.map(lid=>({card_id:editingCardId,label_id:lid,board_id:currentBoard.id})));
+    logHistory('card_edit',`Card "${title}" editado`); toast('Card atualizado');
   } else {
     const maxPos=Math.max(-1,...cards.filter(c=>c.col_id===colId).map(c=>c.position));
-    const { data: newCard, error }=await sb.from('cards').insert({ board_id: currentBoard.id, col_id: colId, title, desc, priority: selectedPriority, due_date: date, position: maxPos+1, created_by: currentUser.id }).select().single();
-    if(error){ toast('Erro ao criar card', true); setSyncErr(); return; }
-    if(selectedTags.length && newCard) await sb.from('card_labels').insert(selectedTags.map(lid=>({ card_id: newCard.id, label_id: lid, board_id: currentBoard.id })));
-    logHistory('card_create', `Card "${title}" criado`); toast('Card criado');
+    const {data:nc,error}=await sb.from('cards').insert({board_id:currentBoard.id,col_id:colId,title,desc,priority:selectedPriority,due_date:date,position:maxPos+1}).select().single();
+    if(error){ toast('Erro ao criar card',true); setSyncErr(); return; }
+    if(selectedTags.length&&nc) await sb.from('card_labels').insert(selectedTags.map(lid=>({card_id:nc.id,label_id:lid,board_id:currentBoard.id})));
+    logHistory('card_create',`Card "${title}" criado`); toast('Card criado');
   }
   setSynced(); closeModal();
 }
 
-/* ═══════════════════════════════════════════
+/* ════════════════════════════════════════════
    LABELS MANAGER
-══════════════════════════════════════════════ */
+════════════════════════════════════════════ */
 function openLabelsModal(){ renderLabelsBody(); document.getElementById('labelsOverlay').classList.add('show'); }
 function closeLabelsModal(){ document.getElementById('labelsOverlay').classList.remove('show'); hideColorPopover(); }
-
 function renderLabelsBody(){
-  const body=document.getElementById('labelsBody');
-  body.innerHTML=labels.map(l=>`
+  document.getElementById('labelsBody').innerHTML=labels.map(l=>`
     <div class="label-row" id="lrow-${l.id}">
-      <span class="label-color-dot" style="background:${l.color_dot}" title="Mudar cor" onclick="openColorPicker(event,'${l.id}')"></span>
+      <span class="label-color-dot" style="background:${l.color_dot}" onclick="openColorPicker(event,'${l.id}')"></span>
       <input class="label-name-input" value="${esc(l.name)}" maxlength="24"
-        onblur="saveLabelName('${l.id}',this.value)"
-        oninput="previewLabelName('${l.id}',this.value)" placeholder="Nome">
+        oninput="previewLabelName('${l.id}',this.value)"
+        onblur="saveLabelName('${l.id}',this.value)" placeholder="Nome">
       <span class="label-preview" style="background:${l.color_bg};color:${l.color_text}" id="lprev-${l.id}">${esc(l.name)}</span>
       <button class="label-del" onclick="deleteLabel('${l.id}')">
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1.5 3.5h10M4.5 3.5V2.5h4v1M5 6v4M8 6v4M2.5 3.5l.8 7.2a1 1 0 0 0 1 .8h4.4a1 1 0 0 0 1-.8l.8-7.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
     </div>`).join('');
 }
-
 function previewLabelName(id,val){ const p=document.getElementById('lprev-'+id); if(p)p.textContent=val; }
-
 async function saveLabelName(id,val){
-  if(!val.trim()) return;
-  const l=labels.find(x=>x.id===id);
-  if(!l||l.name===val.trim()) return;
-  await sb.from('labels').update({ name: val.trim() }).eq('id', id);
+  const l=labels.find(x=>x.id===id); if(!l||l.name===val.trim()) return;
   l.name=val.trim();
+  await sb.from('labels').update({name:val.trim()}).eq('id',id);
 }
-
 async function addLabel(){
   if(!currentBoard) return;
   const dot=PALETTE[labels.length%PALETTE.length];
-  const bg=hexAlpha(dot,0.15);
-  const { data: newL, error }=await sb.from('labels').insert({ board_id: currentBoard.id, name:'Nova label', color_bg: bg, color_text: dot, color_dot: dot }).select().single();
-  if(error){ toast('Erro ao criar label', true); return; }
-  labels.push(newL);
-  renderLabelsBody();
+  const {data:newL,error}=await sb.from('labels').insert({board_id:currentBoard.id,name:'Nova label',color_bg:hexAlpha(dot,.15),color_text:dot,color_dot:dot}).select().single();
+  if(error){ toast('Erro ao criar label',true); return; }
+  labels.push(newL); renderLabelsBody();
   const row=document.getElementById('lrow-'+newL.id);
   if(row){ const inp=row.querySelector('.label-name-input'); if(inp){inp.focus();inp.select();} }
 }
-
 async function deleteLabel(id){
-  await sb.from('card_labels').delete().eq('label_id', id);
-  await sb.from('labels').delete().eq('id', id);
+  await sb.from('card_labels').delete().eq('label_id',id);
+  await sb.from('labels').delete().eq('id',id);
   labels=labels.filter(l=>l.id!==id);
   Object.keys(cardLabels).forEach(cid=>{ cardLabels[cid]=(cardLabels[cid]||[]).filter(l=>l!==id); });
-  renderLabelsBody();
-  render();
+  renderLabelsBody(); render();
 }
-
-/* ── Color picker ── */
 function openColorPicker(e,labelId){
   e.stopPropagation(); colorTargetId=labelId;
   const pop=document.getElementById('colorPopover');
@@ -782,27 +669,22 @@ function openColorPicker(e,labelId){
   pop.innerHTML=PALETTE.map(c=>`<span class="color-swatch ${l?.color_dot===c?'selected':''}" style="background:${c}" onclick="applyColor('${c}')"></span>`).join('');
   pop.classList.add('show');
   pop.style.left=Math.min(e.clientX,window.innerWidth-180)+'px';
-  pop.style.top =Math.min(e.clientY+8,window.innerHeight-180)+'px';
+  pop.style.top=Math.min(e.clientY+8,window.innerHeight-180)+'px';
 }
-
 async function applyColor(hex){
-  const l=labels.find(x=>x.id===colorTargetId);
-  if(!l) return;
-  const bg=hexAlpha(hex,0.15);
-  l.color_dot=hex; l.color_text=hex; l.color_bg=bg;
+  const l=labels.find(x=>x.id===colorTargetId); if(!l) return;
+  const bg=hexAlpha(hex,.15); l.color_dot=hex; l.color_text=hex; l.color_bg=bg;
   hideColorPopover();
-  await sb.from('labels').update({ color_dot: hex, color_text: hex, color_bg: bg }).eq('id', l.id);
-  renderLabelsBody();
-  render();
+  await sb.from('labels').update({color_dot:hex,color_text:hex,color_bg:bg}).eq('id',l.id);
+  renderLabelsBody(); render();
 }
 function hideColorPopover(){ document.getElementById('colorPopover').classList.remove('show'); colorTargetId=null; }
 
-/* ═══════════════════════════════════════════
-   SHARE MODAL
-══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════
+   SHARE
+════════════════════════════════════════════ */
 function openShareModal(){
-  const url=`${window.location.origin}${window.location.pathname}?board=${currentBoard?.id}`;
-  document.getElementById('shareLinkInput').value=url;
+  document.getElementById('shareLinkInput').value=`${location.origin}${location.pathname}?board=${currentBoard?.id}`;
   document.getElementById('shareOverlay').classList.add('show');
 }
 function closeShareModal(){ document.getElementById('shareOverlay').classList.remove('show'); }
@@ -811,105 +693,109 @@ function copyShareLink(){
   navigator.clipboard.writeText(inp.value).then(()=>toast('Link copiado!')).catch(()=>{ inp.select(); document.execCommand('copy'); toast('Link copiado!'); });
 }
 
-/* ═══════════════════════════════════════════
-   HISTORY MODAL
-══════════════════════════════════════════════ */
-const HIST_ICONS = {
-  card_create:   '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="#34D399" stroke-width="1.8" stroke-linecap="round"/></svg>',
-  card_edit:     '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9.5 1.5 12.5 4.5l-8 8H1.5v-3l8-8z" stroke="#A78BFA" stroke-width="1.3" stroke-linejoin="round"/></svg>',
-  card_delete:   '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5h4V4M5.5 7v4M8.5 7v4M3 4l.8 7.2a1 1 0 0 0 1 .8h4.4a1 1 0 0 0 1-.8L11 4" stroke="#FF5C6A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  card_duplicate:'<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" stroke="#60A5FA" stroke-width="1.3"/><path d="M2 9V3.5A1.5 1.5 0 0 1 3.5 2H9" stroke="#60A5FA" stroke-width="1.3" stroke-linecap="round"/></svg>',
-  card_move:     '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M8 4l3 3-3 3" stroke="#FBBF24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  col_create:    '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="5" height="12" rx="1.5" stroke="#34D399" stroke-width="1.3"/></svg>',
-  col_rename:    '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="5" height="12" rx="1.5" stroke="#A78BFA" stroke-width="1.3"/></svg>',
-  col_delete:    '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="5" height="12" rx="1.5" stroke="#FF5C6A" stroke-width="1.3"/></svg>',
-  board_create:  '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5" stroke="#34D399" stroke-width="1.3"/></svg>',
-  board_rename:  '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5" stroke="#A78BFA" stroke-width="1.3"/></svg>',
+/* ════════════════════════════════════════════
+   HISTÓRICO
+════════════════════════════════════════════ */
+const HIST_ICONS={
+  card_create:`<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="#34D399" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+  card_edit:`<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9.5 1.5 12.5 4.5l-8 8H1.5v-3l8-8z" stroke="#A78BFA" stroke-width="1.3" stroke-linejoin="round"/></svg>`,
+  card_delete:`<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5h4V4M5.5 7v4M8.5 7v4M3 4l.8 7.2a1 1 0 0 0 1 .8h4.4a1 1 0 0 0 1-.8L11 4" stroke="#FF5C6A" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  card_duplicate:`<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" stroke="#60A5FA" stroke-width="1.3"/><path d="M2 9V3.5A1.5 1.5 0 0 1 3.5 2H9" stroke="#60A5FA" stroke-width="1.3" stroke-linecap="round"/></svg>`,
+  card_move:`<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M8 4l3 3-3 3" stroke="#FBBF24" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
 };
-const DEFAULT_ICON='<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5" stroke="#7B82A0" stroke-width="1.3"/></svg>';
-
+const DICON=`<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5" stroke="#7B82A0" stroke-width="1.3"/></svg>`;
 function openHistoryModal(){ renderHistoryBody(); document.getElementById('historyOverlay').classList.add('show'); }
 function closeHistoryModal(){ document.getElementById('historyOverlay').classList.remove('show'); }
 function renderHistoryBody(){
   const body=document.getElementById('historyBody');
-  if(!historyItems.length){ body.innerHTML='<p style="color:var(--muted);font-size:13px;padding:8px 6px">Nenhuma atividade ainda.</p>'; return; }
-  body.innerHTML=historyItems.map(h=>{
-    const av=h.user_photo
-      ? `<img src="${esc(h.user_photo)}" class="history-avatar-sm">`
-      : `<div class="history-initials-sm" style="background:${userColor(h.user_id||'')}">${initials(h.user_name)}</div>`;
-    return `<div class="history-item">${av}<span class="history-icon">${HIST_ICONS[h.action]||DEFAULT_ICON}</span>
+  if(!historyItems.length){ body.innerHTML='<p style="color:var(--muted);font-size:13px;padding:8px">Nenhuma atividade ainda.</p>'; return; }
+  body.innerHTML=historyItems.map(h=>`
+    <div class="history-item">
+      <div class="history-initials-sm" style="background:${userColor(h.user_name||'')}">${initials(h.user_name)}</div>
+      <span class="history-icon">${HIST_ICONS[h.action]||DICON}</span>
       <div class="history-content">
         <div class="history-text">${esc(h.detail||h.action)}</div>
         <div class="history-meta"><strong>${esc(h.user_name||'?')}</strong> · ${relTime(h.created_at)}</div>
-      </div></div>`;
-  }).join('');
+      </div>
+    </div>`).join('');
 }
 
-/* ═══════════════════════════════════════════
-   FILTERS
-══════════════════════════════════════════════ */
+/* ════════════════════════════════════════════
+   FILTROS
+════════════════════════════════════════════ */
 function toggleFilter(p,btn){ if(activeFilters.has(p)){activeFilters.delete(p);btn.classList.remove('active');}else{activeFilters.add(p);btn.classList.add('active');} render(); }
 function clearFilters(){ activeFilters.clear(); document.querySelectorAll('.filter-chip').forEach(b=>b.classList.remove('active')); const si=document.getElementById('searchInput'); if(si)si.value=''; render(); }
 
-/* ═══════════════════════════════════════════
-   GLOBAL EVENTS
-══════════════════════════════════════════════ */
-document.addEventListener('click', e=>{
+/* ════════════════════════════════════════════
+   EVENTOS GLOBAIS
+════════════════════════════════════════════ */
+document.addEventListener('click',e=>{
   if(!document.getElementById('ctxMenu').contains(e.target)) hideCtxMenu();
   if(!document.getElementById('colorPopover').contains(e.target)&&!e.target.classList.contains('label-color-dot')) hideColorPopover();
 });
-document.addEventListener('keydown', e=>{
+document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){ hideCtxMenu(); closeModal(); closeLabelsModal(); closeSidebar(); closeShareModal(); closeHistoryModal(); }
 });
 ['modalOverlay','labelsOverlay','shareOverlay','historyOverlay'].forEach(id=>{
-  document.getElementById(id).addEventListener('click', e=>{ if(e.target===document.getElementById(id)) document.getElementById(id).classList.remove('show'); });
+  document.getElementById(id)?.addEventListener('click',e=>{ if(e.target.id===id) document.getElementById(id).classList.remove('show'); });
 });
 window.addEventListener('beforeunload', stopPresence);
 
-/* expose globals for inline onclick */
+/* ── Expõe funções para onclick inline (necessário com type=module) ── */
 Object.assign(window,{
-  signInGoogle,signOut,openUserMenu,
-  toggleSidebar,closeSidebar,filterBoards,showCreateForm,hideCreateForm,createBoard,createBoardKey,deleteBoard,renameCurrent,
-  switchBoard,
-  openAddCol,renameCol,colMenu,colFocusRename,addCardCtxCol,deleteCol,
-  showCtxMenu,ctxEdit,ctxDuplicate,ctxDelete,
-  openNewCard,openAddCardInCol,openEditCard,closeModal,selectPriority,toggleTag,saveCard,
-  openLabelsModal,closeLabelsModal,addLabel,deleteLabel,previewLabelName,saveLabelName,openColorPicker,applyColor,
-  openShareModal,closeShareModal,copyShareLink,
-  openHistoryModal,closeHistoryModal,
-  toggleFilter,clearFilters,
-  onDragOver,onDragLeave,onDrop,render
+  tryUnlock, handlePasswordKey,
+  toggleSidebar, closeSidebar, filterBoards, showCreateForm, hideCreateForm, createBoard, createBoardKey, deleteBoard, renameCurrent, switchBoard,
+  openAddCol, renameCol, colMenu, addCardCtxCol, deleteCol,
+  showCtxMenu, ctxEdit, ctxDuplicate, ctxDelete,
+  openNewCard, openAddCardInCol, openEditCard, closeModal, selectPriority, toggleTag, saveCard,
+  openLabelsModal, closeLabelsModal, addLabel, deleteLabel, previewLabelName, saveLabelName, openColorPicker, applyColor,
+  openShareModal, closeShareModal, copyShareLink,
+  openHistoryModal, closeHistoryModal,
+  toggleFilter, clearFilters,
+  onDragOver, onDragLeave, onDrop, render,
 });
+
+/* ── Boot ── */
+if(isUnlocked()){
+  // sessão já validada nesta aba
+  const savedName = sessionStorage.getItem('kanban_name') || '';
+  myName = savedName || 'Usuário';
+  document.getElementById('authGate').classList.add('hidden');
+  document.getElementById('appShell').style.display='flex';
+  initApp();
+}
+// Se não estiver desbloqueado, o authGate permanece visível
+
 </script>
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
-/* ── TOKENS ── */
 :root{
   --bg:#0F1117;--surface:#1A1D27;--col:#1E2130;--card:#252A3D;--card-h:#2C3250;
   --border:rgba(255,255,255,0.07);--accent:#6C63FF;--accent-d:#5751E0;
   --text:#E2E4F0;--muted:#7B82A0;--red:#FF5C6A;--r:10px;--r-sm:6px;
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;overflow:hidden}
-
-/* ── LAYOUT ── */
 .app{height:100vh;display:flex;flex-direction:column}
 .main{flex:1;overflow:hidden;display:flex;flex-direction:column}
 
 /* ── AUTH GATE ── */
-#authGate{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;z-index:9000}
+#authGate{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;z-index:9000}
 #authGate.hidden{display:none}
-.auth-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:22px;letter-spacing:-.5px;color:var(--text)}
+.auth-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:22px;letter-spacing:-.5px}
 .auth-logo svg{color:var(--accent)}
-.auth-sub{font-size:14px;color:var(--muted)}
-.btn-google{display:flex;align-items:center;gap:10px;padding:11px 24px;border-radius:var(--r-sm);background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:14px;font-weight:500;cursor:pointer;font-family:inherit;transition:all .15s}
-.btn-google:hover{background:var(--col);border-color:var(--accent)}
-.auth-loading{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px}
-.auth-loading.hidden{display:none}
-.spinner{width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
+.auth-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:32px;width:340px;display:flex;flex-direction:column;gap:16px;box-shadow:0 24px 64px rgba(0,0,0,.5)}
+.auth-card h2{font-size:16px;font-weight:600;letter-spacing:-.2px}
+.auth-card p{font-size:13px;color:var(--muted);line-height:1.5}
+.auth-input{background:var(--col);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 14px;color:var(--text);font-size:14px;font-family:inherit;outline:none;transition:border-color .15s;width:100%}
+.auth-input:focus{border-color:var(--accent)}
+.auth-input.shake{animation:shake .4s ease}
+@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+.auth-error{font-size:12px;color:var(--red);min-height:16px}
+.auth-btn{background:var(--accent);border:none;border-radius:var(--r-sm);padding:11px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;transition:background .15s;width:100%}
+.auth-btn:hover{background:var(--accent-d)}
 
 /* ── HEADER ── */
 .header{display:flex;align-items:center;gap:12px;padding:0 20px;height:52px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;position:relative;z-index:50}
@@ -926,8 +812,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
 
 /* ── PRESENCE ── */
 .presence-bar{display:flex;align-items:center;gap:4px}
-.presence-avatar{width:28px;height:28px;border-radius:50%;border:2px solid var(--surface);object-fit:cover;cursor:default;flex-shrink:0;transition:transform .15s}
-.presence-avatar:hover{transform:scale(1.1)}
 .presence-avatar-initials{width:28px;height:28px;border-radius:50%;border:2px solid var(--surface);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;flex-shrink:0;cursor:default;transition:transform .15s}
 .presence-avatar-initials:hover{transform:scale(1.1)}
 
@@ -936,8 +820,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
 .sync-dot.syncing{background:#FBBF24;animation:pulse .8s ease-in-out infinite}
 .sync-dot.error{background:var(--red)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-
-/* ── EDITING BADGE ── */
 .editing-badge{font-size:10px;font-weight:600;color:var(--muted);background:var(--col);border:1px solid var(--border);border-radius:20px;padding:2px 8px;white-space:nowrap}
 
 /* ── BTN ── */
@@ -1034,8 +916,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
 .card-meta-item{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted)}
 .card-priority{width:7px;height:7px;border-radius:2px;flex-shrink:0}
 .p-high{background:var(--red)}.p-medium{background:#FBBF24}.p-low{background:#34D399}
-
-/* ── ADD BTNS ── */
 .add-card-btn{display:flex;align-items:center;gap:6px;padding:7px 8px;border-radius:var(--r-sm);font-size:12px;font-weight:500;color:var(--muted);cursor:pointer;border:none;background:transparent;width:100%;font-family:inherit;transition:all .15s;flex-shrink:0}
 .add-card-btn:hover{background:var(--card);color:var(--text)}
 .add-col-btn{flex-shrink:0;width:260px;height:44px;display:flex;align-items:center;justify-content:center;gap:8px;border-radius:var(--r);border:1px dashed var(--border);background:transparent;color:var(--muted);font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;transition:all .15s;align-self:flex-start}
@@ -1050,7 +930,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
 .ctx-item.danger:hover{background:rgba(255,92,106,.1)}
 .ctx-divider{height:1px;background:var(--border);margin:4px 0}
 
-/* ── MODAL (shared) ── */
+/* ── MODAL ── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:900;display:none;align-items:center;justify-content:center}
 .modal-overlay.show{display:flex}
 .modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);width:540px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.7);display:flex;flex-direction:column;animation:modal-in .2s ease}
@@ -1117,7 +997,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
 .history-content{flex:1;min-width:0}
 .history-text{font-size:13px;line-height:1.4}
 .history-meta{font-size:11px;color:var(--muted);margin-top:2px}
-.history-avatar-sm{width:20px;height:20px;border-radius:50%;object-fit:cover;flex-shrink:0;margin-top:1px}
 .history-initials-sm{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;flex-shrink:0;margin-top:1px}
 
 /* ── TOAST ── */
@@ -1129,7 +1008,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
 </head>
 <body>
 
-<!-- ── AUTH GATE ── -->
+<!-- ══ AUTH GATE ══ -->
 <div id="authGate">
   <div class="auth-logo">
     <svg width="24" height="24" viewBox="0 0 20 20" fill="none">
@@ -1139,19 +1018,24 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
     </svg>
     Kanban
   </div>
-  <p class="auth-sub">Entre para acessar seus quadros</p>
-  <button class="btn-google" onclick="signInGoogle()">
-    <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-    Entrar com Google
-  </button>
-  <div class="auth-loading hidden" id="authLoading">
-    <div class="spinner"></div> Conectando…
+  <div class="auth-card">
+    <h2>Entrar no quadro</h2>
+    <p>Digite seu nome e a senha de acesso compartilhada.</p>
+    <div class="form-group">
+      <label class="form-label">Seu nome</label>
+      <input class="auth-input" id="nameInput" type="text" placeholder="Ex: Ana" autocomplete="name" onkeydown="handlePasswordKey(event)">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Senha</label>
+      <input class="auth-input" id="passwordInput" type="password" placeholder="Senha compartilhada" autocomplete="current-password" onkeydown="handlePasswordKey(event)">
+    </div>
+    <p class="auth-error" id="passwordError"></p>
+    <button class="auth-btn" onclick="tryUnlock()">Entrar</button>
   </div>
 </div>
 
-<!-- ── APP SHELL ── -->
+<!-- ══ APP ══ -->
 <div class="app" id="appShell" style="display:none">
-
   <header class="header">
     <button class="header-logo-btn" id="logoBtn" onclick="toggleSidebar()">
       <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
@@ -1189,9 +1073,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 1v10M1 6h10" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>
         Novo card
       </button>
-      <div id="userAvatarWrap">
-        <button onclick="openUserMenu(event)" style="background:none;border:none;cursor:pointer;padding:0" id="userAvatarBtn"></button>
-      </div>
     </div>
   </header>
 
@@ -1229,27 +1110,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><circle cx="5.5" cy="5.5" r="3.5" stroke="#7B82A0" stroke-width="1.5"/><path d="M8.5 8.5 11 11" stroke="#7B82A0" stroke-width="1.5" stroke-linecap="round"/></svg>
         <input id="searchInput" type="text" placeholder="Buscar cards…" oninput="render()" autocomplete="off">
       </div>
-      <button class="filter-chip" id="chipHigh" onclick="toggleFilter('high',this)">
-        <span style="width:7px;height:7px;border-radius:2px;background:var(--red);display:inline-block"></span>Alta
-      </button>
-      <button class="filter-chip" id="chipMedium" onclick="toggleFilter('medium',this)">
-        <span style="width:7px;height:7px;border-radius:2px;background:#FBBF24;display:inline-block"></span>Média
-      </button>
-      <button class="filter-chip" id="chipLow" onclick="toggleFilter('low',this)">
-        <span style="width:7px;height:7px;border-radius:2px;background:#34D399;display:inline-block"></span>Baixa
-      </button>
-      <div class="toolbar-right">
-        <button class="btn btn-ghost" style="font-size:12px" onclick="clearFilters()">Limpar</button>
-      </div>
+      <button class="filter-chip" id="chipHigh" onclick="toggleFilter('high',this)"><span style="width:7px;height:7px;border-radius:2px;background:var(--red);display:inline-block"></span>Alta</button>
+      <button class="filter-chip" id="chipMedium" onclick="toggleFilter('medium',this)"><span style="width:7px;height:7px;border-radius:2px;background:#FBBF24;display:inline-block"></span>Média</button>
+      <button class="filter-chip" id="chipLow" onclick="toggleFilter('low',this)"><span style="width:7px;height:7px;border-radius:2px;background:#34D399;display:inline-block"></span>Baixa</button>
+      <div class="toolbar-right"><button class="btn btn-ghost" style="font-size:12px" onclick="clearFilters()">Limpar</button></div>
     </div>
     <div class="board" id="board"></div>
   </main>
 </div>
 
-<!-- CTX MENU -->
+<!-- MODAIS -->
 <div class="ctx-menu" id="ctxMenu"></div>
 
-<!-- CARD MODAL -->
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal">
     <div class="modal-head"><h2 id="modalTitle">Novo card</h2><button class="modal-close" onclick="closeModal()"><svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M2 2l11 11M13 2 2 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
@@ -1257,8 +1129,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
       <div class="form-group"><label class="form-label">Título *</label><input class="form-input" id="mTitle" placeholder="Nome do card"></div>
       <div class="form-group"><label class="form-label">Descrição</label><textarea class="form-input form-textarea" id="mDesc" placeholder="Detalhes, links, anotações…"></textarea></div>
       <div class="form-group"><label class="form-label">Coluna</label><select class="form-input" id="mCol"></select></div>
-      <div class="form-group">
-        <label class="form-label">Prioridade</label>
+      <div class="form-group"><label class="form-label">Prioridade</label>
         <div class="priority-picker">
           <button class="prio-btn p-high" data-p="high" onclick="selectPriority(this)"><span style="width:7px;height:7px;border-radius:2px;background:currentColor;display:inline-block"></span>Alta</button>
           <button class="prio-btn p-medium selected" data-p="medium" onclick="selectPriority(this)"><span style="width:7px;height:7px;border-radius:2px;background:currentColor;display:inline-block"></span>Média</button>
@@ -1272,7 +1143,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
   </div>
 </div>
 
-<!-- LABELS MODAL -->
 <div class="labels-modal-overlay" id="labelsOverlay">
   <div class="labels-modal">
     <div class="labels-head"><h2>Gerenciar Labels</h2><button class="modal-close" onclick="closeLabelsModal()"><svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M2 2l11 11M13 2 2 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
@@ -1284,22 +1154,19 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
   </div>
 </div>
 
-<!-- SHARE MODAL -->
 <div class="modal-overlay" id="shareOverlay">
   <div class="modal" style="width:440px">
     <div class="modal-head"><h2>Compartilhar quadro</h2><button class="modal-close" onclick="closeShareModal()"><svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M2 2l11 11M13 2 2 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
     <div class="modal-body" style="gap:14px">
-      <div class="form-group">
-        <label class="form-label">Link do quadro</label>
+      <div class="form-group"><label class="form-label">Link do quadro</label>
         <div class="share-link-box"><input type="text" id="shareLinkInput" readonly><button class="btn btn-ghost btn-sm" onclick="copyShareLink()">Copiar</button></div>
       </div>
-      <p style="font-size:12px;color:var(--muted);line-height:1.5">Qualquer pessoa autenticada com este link pode ver e editar o quadro.</p>
+      <p style="font-size:12px;color:var(--muted);line-height:1.5">Quem receber o link ainda precisará digitar a senha para acessar.</p>
     </div>
     <div class="modal-foot"><button class="btn btn-ghost" onclick="closeShareModal()">Fechar</button></div>
   </div>
 </div>
 
-<!-- HISTORY MODAL -->
 <div class="history-modal-overlay" id="historyOverlay">
   <div class="history-modal">
     <div class="modal-head"><h2>Histórico de atividade</h2><button class="modal-close" onclick="closeHistoryModal()"><svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M2 2l11 11M13 2 2 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
@@ -1307,50 +1174,37 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
   </div>
 </div>
 
-<!-- COLOR POPOVER -->
 <div class="color-popover" id="colorPopover"></div>
-<!-- TOAST -->
 <div class="toast" id="toast"></div>
 
 <!--
-══════════════════════════════════════════════════════════════════
-  GUIA DE CONFIGURAÇÃO — SUPABASE
-  Siga estes passos na ordem antes de publicar no GitHub Pages.
-══════════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════
+  GUIA DE CONFIGURAÇÃO — faça de uma vez, nesta ordem
+══════════════════════════════════════════════════════════════
 
 PASSO 1 — Criar projeto no Supabase
-  1. Acesse https://supabase.com e clique em "Start your project"
-  2. Crie uma organização (ou use uma existente)
-  3. Clique em "New project", dê um nome, defina senha do banco e
-     escolha a região mais próxima (ex: South America - São Paulo)
-  4. Aguarde o projeto provisionar (~2 min)
+  1. Acesse https://supabase.com → "Start your project"
+  2. New project → dê um nome, senha do banco, região São Paulo
+  3. Aguarde ~2 min o projeto provisionar
 
-PASSO 2 — Criar as tabelas (SQL Editor)
-  No menu lateral: SQL Editor → New query → cole e execute:
+PASSO 2 — Criar as tabelas
+  Menu lateral → SQL Editor → New query → cole e execute:
 
-  ─────────────────────────────────────────────────────────────
-  -- Habilita UUID
+  ──────────────────────────────────────────────────────────
   create extension if not exists "pgcrypto";
 
-  -- BOARDS
   create table boards (
     id         uuid primary key default gen_random_uuid(),
     name       text not null,
-    owner_id   uuid references auth.users(id) on delete cascade,
     created_at timestamptz default now()
   );
-
-  -- COLUNAS
   create table board_cols (
     id         uuid primary key default gen_random_uuid(),
     board_id   uuid references boards(id) on delete cascade,
     title      text not null,
     color      text default '#7B82A0',
-    position   int  default 0,
-    created_at timestamptz default now()
+    position   int  default 0
   );
-
-  -- CARDS
   create table cards (
     id         uuid primary key default gen_random_uuid(),
     board_id   uuid references boards(id) on delete cascade,
@@ -1360,94 +1214,86 @@ PASSO 2 — Criar as tabelas (SQL Editor)
     priority   text default 'medium',
     due_date   date,
     position   int  default 0,
-    created_by uuid references auth.users(id),
     created_at timestamptz default now()
   );
-
-  -- LABELS
   create table labels (
     id          uuid primary key default gen_random_uuid(),
     board_id    uuid references boards(id) on delete cascade,
     name        text not null,
     color_bg    text default '#1E1A40',
     color_text  text default '#A78BFA',
-    color_dot   text default '#A78BFA',
-    created_at  timestamptz default now()
+    color_dot   text default '#A78BFA'
   );
-
-  -- CARD <-> LABELS (many-to-many)
   create table card_labels (
     card_id   uuid references cards(id) on delete cascade,
     label_id  uuid references labels(id) on delete cascade,
     board_id  uuid references boards(id) on delete cascade,
     primary key (card_id, label_id)
   );
-
-  -- HISTÓRICO
   create table history (
-    id          uuid primary key default gen_random_uuid(),
-    board_id    uuid references boards(id) on delete cascade,
-    user_id     uuid references auth.users(id),
-    user_name   text,
-    user_photo  text,
-    action      text,
-    detail      text,
-    created_at  timestamptz default now()
+    id         uuid primary key default gen_random_uuid(),
+    board_id   uuid references boards(id) on delete cascade,
+    user_name  text,
+    action     text,
+    detail     text,
+    created_at timestamptz default now()
   );
-  ─────────────────────────────────────────────────────────────
+  ──────────────────────────────────────────────────────────
 
-PASSO 3 — Habilitar Realtime nas tabelas
-  Menu lateral: Database → Replication → Tables
-  Ative "Realtime" para: boards, board_cols, cards, labels, card_labels, history
+PASSO 3 — Habilitar Realtime
+  Menu lateral → Database → Replication
+  Ative o toggle "Realtime" para cada uma das tabelas:
+  boards, board_cols, cards, labels, card_labels, history
 
-PASSO 4 — Configurar Row Level Security (RLS)
+PASSO 4 — Configurar RLS (acesso sem login de usuário)
   SQL Editor → New query → cole e execute:
 
-  ─────────────────────────────────────────────────────────────
-  -- Habilita RLS em todas as tabelas
-  alter table boards     enable row level security;
-  alter table board_cols enable row level security;
-  alter table cards      enable row level security;
-  alter table labels     enable row level security;
+  ──────────────────────────────────────────────────────────
+  alter table boards      enable row level security;
+  alter table board_cols  enable row level security;
+  alter table cards       enable row level security;
+  alter table labels      enable row level security;
   alter table card_labels enable row level security;
-  alter table history    enable row level security;
+  alter table history     enable row level security;
 
-  -- Políticas: usuário autenticado lê e escreve tudo
-  -- (ajuste para multi-tenant mais granular se precisar)
-  create policy "auth_all" on boards      for all to authenticated using (true) with check (true);
-  create policy "auth_all" on board_cols  for all to authenticated using (true) with check (true);
-  create policy "auth_all" on cards       for all to authenticated using (true) with check (true);
-  create policy "auth_all" on labels      for all to authenticated using (true) with check (true);
-  create policy "auth_all" on card_labels for all to authenticated using (true) with check (true);
-  create policy "auth_all" on history     for all to authenticated using (true) with check (true);
-  ─────────────────────────────────────────────────────────────
+  -- Permite tudo para usuários anônimos autenticados
+  -- (a senha do app é validada no frontend antes de chamar signInAnonymously)
+  create policy "anon_all" on boards      for all to anon, authenticated using (true) with check (true);
+  create policy "anon_all" on board_cols  for all to anon, authenticated using (true) with check (true);
+  create policy "anon_all" on cards       for all to anon, authenticated using (true) with check (true);
+  create policy "anon_all" on labels      for all to anon, authenticated using (true) with check (true);
+  create policy "anon_all" on card_labels for all to anon, authenticated using (true) with check (true);
+  create policy "anon_all" on history     for all to anon, authenticated using (true) with check (true);
+  ──────────────────────────────────────────────────────────
 
-PASSO 5 — Ativar Auth com Google
-  Menu lateral: Authentication → Providers → Google → Enable
-  Você precisará de um projeto no Google Cloud Console:
-    1. https://console.cloud.google.com → APIs & Services → Credentials
-    2. Crie um OAuth 2.0 Client ID (Web application)
-    3. Em "Authorized redirect URIs" adicione:
-       https://rkzuzevxxktkiictwsdw.supabase.co/auth/v1/callback
-    4. Copie Client ID e Client Secret de volta para o Supabase
-  Em Authentication → URL Configuration:
-    Site URL: https://shhiif.github.io/Kanban-simple/
-    Redirect URLs: https://shhiif.github.io/Kanban-simple/
+PASSO 5 — Habilitar Auth Anônimo no Supabase
+  Menu lateral → Authentication → Providers
+  Role até "Anonymous Sign-ins" → ative o toggle → Save
 
 PASSO 6 — Copiar credenciais para o index.html
-  Menu lateral: Settings → API
+  Menu lateral → Settings → API
   Copie:
-    • Project URL  → cole em SUPABASE_URL
-    • anon / public key → cole em SUPABASE_ANON_KEY
-  (no topo do <script type="module"> deste arquivo)
+    Project URL  → cole em SUPABASE_URL     (linha ~10 do <script>)
+    anon/public  → cole em SUPABASE_ANON_KEY
+
+  Defina também APP_PASSWORD com a senha que as duas pessoas
+  vão usar para entrar. Ex: APP_PASSWORD = 'kanban2024'
+  (essa senha fica visível no HTML — use algo que não seja
+   reutilizado em outros serviços)
 
 PASSO 7 — Publicar no GitHub Pages
-  1. Renomeie este arquivo para index.html
-  2. Commit + push para branch main do seu repositório
-  3. Settings → Pages → Source: Deploy from branch → main → / (root)
-  4. Acesse: https://SEU-USUARIO.github.io/SEU-REPO/
+  1. Salve o arquivo como index.html
+  2. Crie um repositório no GitHub (pode ser privado)
+  3. Faça upload do index.html
+  4. Settings → Pages → Source: Deploy from branch
+     Branch: main  /  Folder: / (root)  → Save
+  5. Aguarde ~1 min → acesse a URL gerada
 
-══════════════════════════════════════════════════════════════════
+  IMPORTANTE: se o repositório for público, qualquer pessoa
+  pode ver a senha no código-fonte. Use um repositório PRIVADO
+  no GitHub para proteger a APP_PASSWORD.
+
+══════════════════════════════════════════════════════════════
 -->
 </body>
 </html>
