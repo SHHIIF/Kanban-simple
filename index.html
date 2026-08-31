@@ -98,6 +98,7 @@ function checkPassword(input){
 async function tryUnlock(){
   const input = document.getElementById('passwordInput').value;
   const errEl = document.getElementById('passwordError');
+  const btn   = document.getElementById('unlockBtn');
 
   if(!checkPassword(input)){
     errEl.textContent = 'Senha incorreta. Tente novamente.';
@@ -106,18 +107,27 @@ async function tryUnlock(){
     return;
   }
 
-  // Senha correta — autentica anonimamente no Supabase para o RLS funcionar
+  // Senha correta — autentica anonimamente no Supabase para RLS funcionar
+  errEl.textContent = '';
+  btn.textContent = 'Conectando…';
+  btn.disabled = true;
+
   const { error } = await sb.auth.signInAnonymously();
-  if(error && error.message !== 'User already registered'){
-    errEl.textContent = 'Erro de conexão com o servidor.';
-    return;
+  if(error){
+    // Ignora "already registered/logged in" — sessão já existe, segue
+    const msg = error.message || '';
+    if(!msg.includes('already') && !msg.includes('registered') && !msg.includes('logged')){
+      errEl.textContent = 'Erro de conexão: ' + msg;
+      btn.textContent = 'Entrar';
+      btn.disabled = false;
+      return;
+    }
   }
 
-  sessionStorage.setItem(SESSION_KEY, 'true');
-
-  // Pede nome
   const name = document.getElementById('nameInput').value.trim();
   myName = name || 'Usuário';
+  sessionStorage.setItem(SESSION_KEY, 'true');
+  sessionStorage.setItem('kanban_name', myName);
 
   document.getElementById('authGate').classList.add('hidden');
   document.getElementById('appShell').style.display = 'flex';
@@ -757,14 +767,12 @@ Object.assign(window,{
 
 /* ── Boot ── */
 if(isUnlocked()){
-  // sessão já validada nesta aba
-  const savedName = sessionStorage.getItem('kanban_name') || '';
-  myName = savedName || 'Usuário';
+  myName = sessionStorage.getItem('kanban_name') || 'Usuário';
   document.getElementById('authGate').classList.add('hidden');
   document.getElementById('appShell').style.display='flex';
   initApp();
 }
-// Se não estiver desbloqueado, o authGate permanece visível
+// Se não desbloqueado, authGate permanece visível
 
 </script>
 
@@ -1030,7 +1038,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter'
       <input class="auth-input" id="passwordInput" type="password" placeholder="Senha compartilhada" autocomplete="current-password" onkeydown="handlePasswordKey(event)">
     </div>
     <p class="auth-error" id="passwordError"></p>
-    <button class="auth-btn" onclick="tryUnlock()">Entrar</button>
+    <button class="auth-btn" id="unlockBtn" onclick="tryUnlock()">Entrar</button>
   </div>
 </div>
 
