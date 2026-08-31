@@ -6,15 +6,17 @@
 <title>Kanban</title>
 <script type="module">
 
+/* import DEVE ser a primeira instrução do módulo ES6 */
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
 /* ════════════════════════════════════════════
    CONFIGURAÇÃO — preencha só estes 3 valores
    (instruções no final do arquivo)
 ════════════════════════════════════════════ */
-const SUPABASE_URL     = https://hthpkexccocbncbhebcr.supabase.co;
-const SUPABASE_ANON_KEY= sb_publishable_QyF550xnqhipiSdWs6kmrg_I4jOF_dI;
-const APP_PASSWORD     = TesteFamiliar123;
+const SUPABASE_URL      = 'https://hthpkexccocbncbhebcr.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_QyF550xnqhipiSdWs6kmrg_I4jOF_dI';
+const APP_PASSWORD      = 'TesteFamiliar123';
 
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   realtime: { params: { eventsPerSecond: 20 } },
   auth: { persistSession: true, storageKey: 'kanban_session' }
